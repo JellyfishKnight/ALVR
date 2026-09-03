@@ -301,7 +301,7 @@ pub unsafe extern "C" fn alvr_poll_event(out_event: *mut AlvrEvent, timeout_ns: 
                     alvr_common::to_capi_view_params(&config[1]),
                 ])
             },
-            ServerCoreEvent::Tracking { poll_timestamp } => unsafe {
+            ServerCoreEvent::Tracking { poll_timestamp, .. } => unsafe {
                 *out_event = AlvrEvent::TrackingUpdated {
                     sample_timestamp_ns: poll_timestamp.as_nanos() as u64,
                 };
@@ -503,6 +503,7 @@ pub unsafe extern "C" fn alvr_send_video_nal(
         context.send_video_nal(
             Duration::from_nanos(timestamp_ns),
             global_view_params,
+            None,
             is_idr,
             buffer.to_vec(),
         );

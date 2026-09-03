@@ -26,8 +26,8 @@ use alvr_common::{
 use alvr_events::{EventType, HapticsEvent};
 use alvr_filesystem as afs;
 use alvr_packets::{
-    BatteryInfo, ButtonEntry, ClientConnectionsAction, DecoderInitializationConfig, Haptics,
-    VideoPacketHeader,
+    BatteryInfo, ButtonEntry, ClientConnectionsAction, DecoderInitializationConfig, GazeSample,
+    Haptics, VideoPacketHeader,
 };
 use alvr_server_io::ServerSessionManager;
 use alvr_session::{CodecType, H264Profile, OpenvrProperty, Settings, SteamvrHmdInitConfig};
@@ -75,6 +75,7 @@ pub struct ServerNegotiatedStreamingConfig {
     pub emulated_headset_view_resolution: UVec2,
     pub refresh_rate: f32,
     pub enable_foveated_encoding: bool,
+    pub enable_foveation_center_metadata: bool,
     pub codec: CodecType,
     pub h264_profile: H264Profile,
     pub use_10bit_encoder: bool,
@@ -94,6 +95,7 @@ pub enum ServerCoreEvent {
     LocalViewParams([ViewParams; 2]), // In relation to head
     Tracking {
         poll_timestamp: Duration,
+        gaze: Option<GazeSample>,
     },
     Buttons(Vec<ButtonEntry>), // Note: this is after mapping
     RequestIDR,
@@ -385,6 +387,7 @@ impl ServerCoreContext {
         &self,
         timestamp: Duration,
         global_view_params: [ViewParams; 2],
+        foveation_centers: Option<[Vec2; 2]>,
         is_idr: bool,
         nal_buffer: Vec<u8>,
     ) {
@@ -444,6 +447,7 @@ impl ServerCoreContext {
                     header: VideoPacketHeader {
                         timestamp,
                         global_view_params,
+                        foveation_centers,
                         is_idr,
                     },
                     payload: nal_buffer,

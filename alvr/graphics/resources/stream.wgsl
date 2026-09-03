@@ -13,31 +13,9 @@ override UPSCALE_EDGE_SHARPNESS: f32 = 2.0;
 
 override ENABLE_FFE: bool = false;
 
-override VIEW_WIDTH_RATIO: f32 = 0.0;
-override VIEW_HEIGHT_RATIO: f32 = 0.0;
-override EDGE_X_RATIO: f32 = 0.0;
-override EDGE_Y_RATIO: f32 = 0.0;
-
-override C1_X: f32 = 0.0;
-override C1_Y: f32 = 0.0;
-override C2_X: f32 = 0.0;
-override C2_Y: f32 = 0.0;
-override LO_BOUND_X: f32 = 0.0;
-override LO_BOUND_Y: f32 = 0.0;
-override HI_BOUND_X: f32 = 0.0;
-override HI_BOUND_Y: f32 = 0.0;
-
-override A_LEFT_X: f32 = 0.0;
-override A_LEFT_Y: f32 = 0.0;
-override B_LEFT_X: f32 = 0.0;
-override B_LEFT_Y: f32 = 0.0;
-
-override A_RIGHT_X: f32 = 0.0;
-override A_RIGHT_Y: f32 = 0.0;
-override B_RIGHT_X: f32 = 0.0;
-override B_RIGHT_Y: f32 = 0.0;
-override C_RIGHT_X: f32 = 0.0;
-override C_RIGHT_Y: f32 = 0.0;
+// On-headset diagnostic overlay for validating dynamic foveation.
+// Magenta marks the center ALVR uses; yellow outlines the native-density region.
+override SHOW_FOVEATION_DIAGNOSTIC: bool = false;
 
 struct PushConstant {
     reprojection_transform: mat4x4f,
@@ -53,6 +31,19 @@ var<push_constant> pc: PushConstant;
 
 @group(0) @binding(0) var stream_texture: texture_2d<f32>;
 @group(0) @binding(1) var stream_sampler: sampler;
+
+struct FoveationEyeUniforms {
+    c1_c2: vec4f,
+    lo_hi_bound: vec4f,
+    a_left_b_left: vec4f,
+    a_right_b_right: vec4f,
+    c_right: vec4f,
+}
+struct FoveationUniforms {
+    view_ratio_edge_ratio: vec4f,
+    eyes: array<FoveationEyeUniforms, 2>,
+}
+@group(0) @binding(2) var<uniform> foveation: FoveationUniforms;
 
 struct VertexOutput {
     @builtin(position) position: vec4f,
@@ -75,20 +66,21 @@ fn fragment_main(@location(0) uv: vec2f) -> @location(0) vec4f {
     // tell upscaler to target a lower resolution for the edges
     var upscale_source_resolution = 1.0;
     if ENABLE_FFE {
-        let view_size_ratio = vec2f(VIEW_WIDTH_RATIO, VIEW_HEIGHT_RATIO);
-        let edge_ratio = vec2f(EDGE_X_RATIO, EDGE_Y_RATIO);
+        let view_size_ratio = foveation.view_ratio_edge_ratio.xy;
+        let edge_ratio = foveation.view_ratio_edge_ratio.zw;
+        let eye = foveation.eyes[pc.view_idx];
 
-        let c1 = vec2f(C1_X, C1_Y);
-        let c2 = vec2f(C2_X, C2_Y);
-        let lo_bound = vec2f(LO_BOUND_X, LO_BOUND_Y);
-        let hi_bound = vec2f(HI_BOUND_X, HI_BOUND_Y);
+        let c1 = eye.c1_c2.xy;
+        let c2 = eye.c1_c2.zw;
+        let lo_bound = eye.lo_hi_bound.xy;
+        let hi_bound = eye.lo_hi_bound.zw;
 
-        let a_left = vec2f(A_LEFT_X, A_LEFT_Y);
-        let b_left = vec2f(B_LEFT_X, B_LEFT_Y);
+        let a_left = eye.a_left_b_left.xy;
+        let b_left = eye.a_left_b_left.zw;
 
-        let a_right = vec2f(A_RIGHT_X, A_RIGHT_Y);
-        let b_right = vec2f(B_RIGHT_X, B_RIGHT_Y);
-        let c_right = vec2f(C_RIGHT_X, C_RIGHT_Y);
+        let a_right = eye.a_right_b_right.xy;
+        let b_right = eye.a_right_b_right.zw;
+        let c_right = eye.c_right.xy;
 
         if pc.view_idx == 1 {
             corrected_uv.x = 1.0 - corrected_uv.x;
@@ -157,6 +149,44 @@ fn fragment_main(@location(0) uv: vec2f) -> @location(0) vec4f {
         // Note: because of this calculation, we require premultiplied alpha option in the XR layer
         color = max(color * mask, vec3f(0.0));
         alpha = mask;
+    }
+
+    if ENABLE_FFE && SHOW_FOVEATION_DIAGNOSTIC {
+        let eye = foveation.eyes[pc.view_idx];
+        let lo_bound = eye.lo_hi_bound.xy;
+        let hi_bound = eye.lo_hi_bound.zw;
+        let gaze_center = (lo_bound + hi_bound) * 0.5;
+
+        // The right eye is stored horizontally mirrored in the packed stream.
+        // Use the same coordinate convention as the inverse foveation transform
+        // above so the marker exposes the exact center consumed by the shader.
+        var foveation_uv = uv;
+        if pc.view_idx == 1 {
+            foveation_uv.x = 1.0 - foveation_uv.x;
+        }
+
+        let center_delta = abs(foveation_uv - gaze_center);
+        let center_distance = length(foveation_uv - gaze_center);
+        let cross = (center_delta.x < 0.0025 && center_delta.y < 0.035)
+            || (center_delta.y < 0.0025 && center_delta.x < 0.035);
+        let ring = abs(center_distance - 0.022) < 0.003;
+
+        let inside_x = foveation_uv.x >= lo_bound.x && foveation_uv.x <= hi_bound.x;
+        let inside_y = foveation_uv.y >= lo_bound.y && foveation_uv.y <= hi_bound.y;
+        let vertical_border = inside_y
+            && (abs(foveation_uv.x - lo_bound.x) < 0.002
+                || abs(foveation_uv.x - hi_bound.x) < 0.002);
+        let horizontal_border = inside_x
+            && (abs(foveation_uv.y - lo_bound.y) < 0.002
+                || abs(foveation_uv.y - hi_bound.y) < 0.002);
+
+        if vertical_border || horizontal_border {
+            color = vec3f(1.0, 0.85, 0.0);
+        }
+        if cross || ring {
+            color = vec3f(1.0, 0.0, 1.0);
+            alpha = 1.0;
+        }
     }
 
     return vec4f(color, alpha);

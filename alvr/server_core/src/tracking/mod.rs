@@ -18,7 +18,7 @@ use alvr_common::{
     inputs as inp,
 };
 use alvr_events::{EventType, TrackingEvent};
-use alvr_packets::TrackingData;
+use alvr_packets::{GazeDirection, GazeSample, TrackingData};
 use alvr_session::{
     BodyTrackingConfig, HeadsetConfig, RecenteringMode, Settings, VMCConfig,
     settings_schema::Switch,
@@ -315,6 +315,13 @@ pub fn tracking_loop(
         };
 
         let timestamp = tracking.poll_timestamp;
+        let gaze = tracking.face.eyes_combined.and_then(|orientation| {
+            GazeDirection::from_orientation(orientation).map(|direction| GazeSample {
+                // The current headset packet has no independent gaze acquisition timestamp.
+                sample_timestamp: timestamp,
+                directions: [direction; 2],
+            })
+        });
 
         if let Some(stats) = &mut *ctx.statistics_manager.write() {
             stats.report_tracking_received(timestamp);
@@ -448,6 +455,7 @@ pub fn tracking_loop(
         ctx.events_sender
             .send(ServerCoreEvent::Tracking {
                 poll_timestamp: tracking.poll_timestamp,
+                gaze,
             })
             .ok();
 

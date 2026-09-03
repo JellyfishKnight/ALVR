@@ -6,12 +6,14 @@ class FFR {
 public:
     FFR(ID3D11Device* device);
     void Initialize(ID3D11Texture2D* compositionTexture);
-    void Render();
+    void Render(uint64_t targetTimestampNs);
     void GetOptimizedResolution(uint32_t* width, uint32_t* height);
     ID3D11Texture2D* GetOutputTexture();
 
 private:
     Microsoft::WRL::ComPtr<ID3D11Device> mDevice;
+    Microsoft::WRL::ComPtr<ID3D11DeviceContext> mImmediateContext;
+    Microsoft::WRL::ComPtr<ID3D11Buffer> mFoveatedRenderingBuffer;
     Microsoft::WRL::ComPtr<ID3D11Texture2D> mOptimizedTexture;
     Microsoft::WRL::ComPtr<ID3D11VertexShader> mQuadVertexShader;
 

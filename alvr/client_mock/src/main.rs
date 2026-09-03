@@ -195,6 +195,7 @@ fn client_thread(
         max_view_resolution: UVec2::new(1920, 1832),
         refresh_rates: vec![60.0, 72.0, 80.0, 90.0, 120.0],
         foveated_encoding: false,
+        foveation_center_metadata: false,
         encoder_high_profile: false,
         encoder_10_bits: false,
         encoder_av1: false,

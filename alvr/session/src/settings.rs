@@ -445,6 +445,22 @@ pub enum ClientsideFoveationMode {
     Dynamic { max_level: ClientsideFoveationLevel },
 }
 
+#[derive(SettingsSchema, Serialize, Deserialize, Clone, Copy, PartialEq, Eq)]
+pub enum GazeInputSource {
+    #[schema(strings(
+        display_name = "None",
+        help = "Use the configured static foveation center"
+    ))]
+    None,
+    #[schema(strings(display_name = "Headset eye tracking"))]
+    Headset,
+    #[schema(strings(display_name = "External UDP"))]
+    ExternalUdp {
+        #[schema(strings(display_name = "External gaze UDP port"))]
+        port: u16,
+    },
+}
+
 #[derive(SettingsSchema, Serialize, Deserialize, Clone, PartialEq)]
 pub struct ClientsideFoveationConfig {
     pub mode: ClientsideFoveationMode,
@@ -459,6 +475,10 @@ pub struct ClientsideFoveationConfig {
 pub struct FoveatedEncodingConfig {
     #[schema(strings(help = "Force enable on smartphone clients"))]
     pub force_enable: bool,
+
+    #[schema(strings(display_name = "Eye tracking input"))]
+    #[schema(flag = "steamvr-restart")]
+    pub gaze_input_source: GazeInputSource,
 
     #[schema(strings(display_name = "Center region width"))]
     #[schema(gui(slider(min = 0.0, max = 1.0, step = 0.01)))]
@@ -1869,6 +1889,10 @@ pub fn session_settings_default() -> SettingsDefault {
                 content: FoveatedEncodingConfigDefault {
                     gui_collapsed: true,
                     force_enable: false,
+                    gaze_input_source: GazeInputSourceDefault {
+                        ExternalUdp: GazeInputSourceExternalUdpDefault { port: 9945 },
+                        variant: GazeInputSourceDefaultVariant::None,
+                    },
                     center_size_x: 0.45,
                     center_size_y: 0.4,
                     center_shift_x: 0.4,

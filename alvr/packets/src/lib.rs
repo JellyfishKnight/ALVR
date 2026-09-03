@@ -1,7 +1,7 @@
 use alvr_common::{
     BodySkeleton, ConnectionState, DeviceMotion, LogSeverity, Pose, ViewParams,
     anyhow::Result,
-    glam::{Quat, UVec2, Vec2},
+    glam::{Quat, UVec2, Vec2, Vec3},
     semver::Version,
 };
 use alvr_session::{
@@ -23,9 +23,10 @@ pub const AUDIO: u16 = 2;
 pub const VIDEO: u16 = 3;
 pub const STATISTICS: u16 = 4;
 
-#[derive(Serialize, Deserialize, Clone)]
+#[derive(Serialize, Deserialize, Clone, Default)]
 pub struct VideoStreamingCapabilitiesExt {
-    // Nothing for now
+    #[serde(default)]
+    pub foveation_center_metadata: bool,
 }
 
 #[derive(Serialize, Deserialize, Clone)]
@@ -53,11 +54,7 @@ impl VideoStreamingCapabilities {
     }
 
     pub fn ext(&self) -> Result<VideoStreamingCapabilitiesExt> {
-        let _ext_json = json::from_str::<json::Value>(&self.ext_str)?;
-
-        // decode values here
-
-        Ok(VideoStreamingCapabilitiesExt {})
+        Ok(json::from_str(&self.ext_str)?)
     }
 }
 
@@ -216,6 +213,58 @@ pub enum FaceExpressions {
     },
 }
 
+/// A validated gaze direction in ALVR's canonical gaze coordinate space.
+///
+/// The coordinate system is right-handed and head-local at `GazeSample::sample_timestamp`:
+/// `+X` points right, `+Y` points up and `-Z` points forward. `direction` is dimensionless and
+/// normalized. It must not contain device-specific angle limits, screen UVs, texture packing,
+/// foveation center shifts or user sensitivity scaling. Presence means the source adapter already
+/// considers the direction valid.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct GazeDirection {
+    direction: Vec3,
+}
+
+impl GazeDirection {
+    /// Validates and normalizes a direction supplied by a gaze-source adapter.
+    pub fn new(direction: Vec3) -> Option<Self> {
+        let length_squared = direction.length_squared();
+        let direction_is_valid =
+            direction.is_finite() && length_squared.is_finite() && length_squared > f32::EPSILON;
+
+        direction_is_valid.then(|| Self {
+            direction: direction / length_squared.sqrt(),
+        })
+    }
+
+    /// Converts an OpenXR-style orientation whose forward axis is `-Z`.
+    pub fn from_orientation(orientation: Quat) -> Option<Self> {
+        let length_squared = orientation.length_squared();
+        let orientation_is_valid =
+            orientation.is_finite() && length_squared.is_finite() && length_squared > f32::EPSILON;
+
+        orientation_is_valid
+            .then(|| orientation / length_squared.sqrt() * Vec3::NEG_Z)
+            .and_then(Self::new)
+    }
+
+    /// Returns the normalized head-local direction.
+    pub fn direction(self) -> Vec3 {
+        self.direction
+    }
+}
+
+/// A device-independent gaze sample before projection into either rendered eye.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct GazeSample {
+    /// Acquisition or source-prediction time in the same timeline as ALVR tracking/video frames.
+    /// This is the time represented by the gaze direction, not the packet receive time.
+    pub sample_timestamp: Duration,
+    /// Canonical directions in `[left, right]` order. Source adapters duplicate a combined or
+    /// single-eye direction so downstream consumers always receive both entries.
+    pub directions: [GazeDirection; 2],
+}
+
 #[derive(Serialize, Deserialize, Clone, Default, Debug)]
 pub struct FaceData {
     // Can be used for foveated eye tracking
@@ -239,6 +288,9 @@ pub struct TrackingData {
 pub struct VideoPacketHeader {
     pub timestamp: Duration,
     pub global_view_params: [ViewParams; 2],
+    // Uses the encoder's per-eye center_shift convention (-1..=1), not texture UV coordinates.
+    // Right-eye X follows the horizontally mirrored packed-texture space.
+    pub foveation_centers: Option<[Vec2; 2]>,
     pub is_idr: bool,
 }
 

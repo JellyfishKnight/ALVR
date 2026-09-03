@@ -218,6 +218,7 @@ pub extern "C" fn alvr_initialize(capabilities: AlvrClientCapabilities) {
         max_view_resolution,
         refresh_rates,
         foveated_encoding: capabilities.foveated_encoding,
+        foveation_center_metadata: false,
         encoder_high_profile: capabilities.encoder_high_profile,
         encoder_10_bits: capabilities.encoder_10_bits,
         encoder_av1: capabilities.encoder_av1,
@@ -423,7 +424,9 @@ pub extern "C" fn alvr_send_view_params(view_params: *const AlvrViewParams) {
 /// * outer ptr: array of 2 (can be null);
 /// * inner ptr: array of 26 (can be null if hand is absent)
 ///
-/// combined_eye_gaze: can be null if eye gaze is absent
+/// `combined_eye_gaze` can be null when eye gaze is absent. Otherwise it points to a head-local
+/// OpenXR-style orientation whose `-Z` axis follows the gaze direction. The legacy API associates
+/// it with `poll_timestamp_ns` because it has no independent gaze acquisition timestamp.
 #[unsafe(no_mangle)]
 pub extern "C" fn alvr_send_tracking(
     poll_timestamp_ns: u64,
@@ -551,12 +554,12 @@ pub extern "C" fn alvr_report_compositor_start(
     out_view_params: *mut AlvrViewParams,
 ) {
     if let Some(context) = &*CLIENT_CORE_CONTEXT.lock() {
-        let view_params =
-            context.report_compositor_start(Duration::from_nanos(target_timestamp_ns));
+        let metadata = context.report_compositor_start(Duration::from_nanos(target_timestamp_ns));
+        let [left_view_params, right_view_params] = metadata.view_params;
 
         unsafe {
-            *out_view_params = alvr_common::to_capi_view_params(&view_params[0]);
-            *out_view_params.offset(1) = alvr_common::to_capi_view_params(&view_params[1]);
+            *out_view_params = alvr_common::to_capi_view_params(&left_view_params);
+            *out_view_params.offset(1) = alvr_common::to_capi_view_params(&right_view_params);
         }
     }
 }
@@ -684,6 +687,7 @@ pub extern "C" fn alvr_start_stream_opengl(config: AlvrStreamConfig) {
         convert_swapchain_array(config.swapchain_textures, config.swapchain_length);
     let foveated_encoding = config.enable_foveation.then_some(FoveatedEncodingConfig {
         force_enable: true,
+        gaze_input_source: alvr_session::GazeInputSource::None,
         center_size_x: config.foveation_center_size_x,
         center_size_y: config.foveation_center_size_y,
         center_shift_x: config.foveation_center_shift_x,
@@ -804,6 +808,7 @@ pub extern "C" fn alvr_render_stream_opengl(
                         },
                     },
                 ],
+                None,
                 None,
             );
         }

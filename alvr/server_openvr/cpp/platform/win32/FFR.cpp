@@ -3,6 +3,9 @@
 #include "alvr_server/Utils.h"
 #include "alvr_server/bindings.h"
 
+#include <algorithm>
+#include <cmath>
+
 using Microsoft::WRL::ComPtr;
 using namespace d3d_render_utils;
 
@@ -19,20 +22,57 @@ struct FoveationVars {
 
     float centerSizeX;
     float centerSizeY;
-    float centerShiftX;
-    float centerShiftY;
+    float centerShiftLeftX;
+    float centerShiftLeftY;
+    float centerShiftRightX;
+    float centerShiftRightY;
     float edgeRatioX;
     float edgeRatioY;
+    float padding[2];
 };
 
-FoveationVars CalculateFoveationVars() {
+static_assert(sizeof(FoveationVars) == 64, "FoveationVars must match the HLSL constant buffer");
+
+float AlignCenterShift(float centerShift, float edgeSizeAligned, float edgeRatio) {
+    if (!std::isfinite(centerShift) || !std::isfinite(edgeSizeAligned) || !std::isfinite(edgeRatio)
+        || edgeSizeAligned <= 0.0f || edgeRatio <= 0.0f) {
+        return 0.0f;
+    }
+
+    const float alignmentStep = edgeRatio * 2.0f / edgeSizeAligned;
+    if (!std::isfinite(alignmentStep) || alignmentStep >= 1.0f) {
+        return 0.0f;
+    }
+
+    // At exactly +/-1 one peripheral segment has zero width, making the inverse
+    // transform singular. Keep one encoder-alignment step on both sides so the
+    // encoder and decoder transforms remain finite and invertible.
+    const float aligned = std::ceil(centerShift / alignmentStep) * alignmentStep;
+    const float safeMin = -1.0f + alignmentStep;
+    const float safeMax = 1.0f - alignmentStep;
+
+    return std::clamp(aligned, safeMin, safeMax);
+}
+
+float StaticRightCenterShiftX() {
+    if (Settings_Instance()->m_enableFoveationCenterMetadata) {
+        // Metadata-aware clients can invert independent per-eye transforms, so mirror the static
+        // right-eye center to keep both eyes focused on the same visual direction.
+        return -Settings_Instance()->m_foveationCenterShiftX;
+    }
+
+    // Preserve the legacy static transform for clients that cannot consume per-frame centers.
+    return Settings_Instance()->m_foveationCenterShiftX;
+}
+
+FoveationVars CalculateFoveationVars(
+    float centerShiftLeftX, float centerShiftLeftY, float centerShiftRightX, float centerShiftRightY
+) {
     float targetEyeWidth = (float)Settings_Instance()->m_renderWidth / 2;
     float targetEyeHeight = (float)Settings_Instance()->m_renderHeight;
 
     float centerSizeX = (float)Settings_Instance()->m_foveationCenterSizeX;
     float centerSizeY = (float)Settings_Instance()->m_foveationCenterSizeY;
-    float centerShiftX = (float)Settings_Instance()->m_foveationCenterShiftX;
-    float centerShiftY = (float)Settings_Instance()->m_foveationCenterShiftY;
     float edgeRatioX = (float)Settings_Instance()->m_foveationEdgeRatioX;
     float edgeRatioY = (float)Settings_Instance()->m_foveationEdgeRatioY;
 
@@ -47,10 +87,14 @@ FoveationVars CalculateFoveationVars() {
     float edgeSizeXAligned = targetEyeWidth - centerSizeXAligned * targetEyeWidth;
     float edgeSizeYAligned = targetEyeHeight - centerSizeYAligned * targetEyeHeight;
 
-    float centerShiftXAligned = ceil(centerShiftX * edgeSizeXAligned / (edgeRatioX * 2.))
-        * (edgeRatioX * 2.) / edgeSizeXAligned;
-    float centerShiftYAligned = ceil(centerShiftY * edgeSizeYAligned / (edgeRatioY * 2.))
-        * (edgeRatioY * 2.) / edgeSizeYAligned;
+    float centerShiftLeftXAligned
+        = AlignCenterShift(centerShiftLeftX, edgeSizeXAligned, edgeRatioX);
+    float centerShiftLeftYAligned
+        = AlignCenterShift(centerShiftLeftY, edgeSizeYAligned, edgeRatioY);
+    float centerShiftRightXAligned
+        = AlignCenterShift(centerShiftRightX, edgeSizeXAligned, edgeRatioX);
+    float centerShiftRightYAligned
+        = AlignCenterShift(centerShiftRightY, edgeSizeYAligned, edgeRatioY);
 
     float foveationScaleX = (centerSizeXAligned + (1. - centerSizeXAligned) / edgeRatioX);
     float foveationScaleY = (centerSizeYAligned + (1. - centerSizeYAligned) / edgeRatioY);
@@ -73,15 +117,23 @@ FoveationVars CalculateFoveationVars() {
              eyeHeightRatioAligned,
              centerSizeXAligned,
              centerSizeYAligned,
-             centerShiftXAligned,
-             centerShiftYAligned,
+             centerShiftLeftXAligned,
+             centerShiftLeftYAligned,
+             centerShiftRightXAligned,
+             centerShiftRightYAligned,
              edgeRatioX,
-             edgeRatioY };
+             edgeRatioY,
+             { 0.0f, 0.0f } };
 }
 }
 
 void FFR::GetOptimizedResolution(uint32_t* width, uint32_t* height) {
-    auto fovVars = CalculateFoveationVars();
+    auto fovVars = CalculateFoveationVars(
+        Settings_Instance()->m_foveationCenterShiftX,
+        Settings_Instance()->m_foveationCenterShiftY,
+        StaticRightCenterShiftX(),
+        Settings_Instance()->m_foveationCenterShiftY
+    );
     *width = fovVars.optimizedEyeWidth * 2;
     *height = fovVars.optimizedEyeHeight;
 }
@@ -90,8 +142,19 @@ FFR::FFR(ID3D11Device* device)
     : mDevice(device) { }
 
 void FFR::Initialize(ID3D11Texture2D* compositionTexture) {
-    auto fovVars = CalculateFoveationVars();
-    ComPtr<ID3D11Buffer> foveatedRenderingBuffer = CreateBuffer(mDevice.Get(), fovVars);
+    auto fovVars = CalculateFoveationVars(
+        Settings_Instance()->m_foveationCenterShiftX,
+        Settings_Instance()->m_foveationCenterShiftY,
+        StaticRightCenterShiftX(),
+        Settings_Instance()->m_foveationCenterShiftY
+    );
+    const bool dynamicCentersEnabled = Settings_Instance()->m_enableFoveationCenterMetadata;
+    mFoveatedRenderingBuffer = CreateBuffer(
+        mDevice.Get(), fovVars, dynamicCentersEnabled ? D3D11_USAGE_DEFAULT : D3D11_USAGE_IMMUTABLE
+    );
+    if (dynamicCentersEnabled) {
+        mDevice->GetImmediateContext(&mImmediateContext);
+    }
 
     std::vector<uint8_t> quadShaderCSO(
         QUAD_SHADER_CSO_PTR, QUAD_SHADER_CSO_PTR + QUAD_SHADER_CSO_LEN
@@ -117,7 +180,7 @@ void FFR::Initialize(ID3D11Texture2D* compositionTexture) {
             mQuadVertexShader.Get(),
             compressAxisAlignedShaderCSO,
             mOptimizedTexture.Get(),
-            foveatedRenderingBuffer.Get()
+            mFoveatedRenderingBuffer.Get()
         );
 
         mPipelines.push_back(compressAxisAlignedPipeline);
@@ -126,7 +189,34 @@ void FFR::Initialize(ID3D11Texture2D* compositionTexture) {
     }
 }
 
-void FFR::Render() {
+void FFR::Render(uint64_t targetTimestampNs) {
+    if (Settings_Instance()->m_enableFoveationCenterMetadata) {
+        auto eyeTrackedCenters = GetEyeTrackedFoveationCenters(targetTimestampNs);
+        bool usingEyeTrackedFoveation = eyeTrackedCenters.valid;
+
+        float leftX = usingEyeTrackedFoveation ? eyeTrackedCenters.leftX
+                                               : Settings_Instance()->m_foveationCenterShiftX;
+        float leftY = usingEyeTrackedFoveation ? eyeTrackedCenters.leftY
+                                               : Settings_Instance()->m_foveationCenterShiftY;
+        float rightX
+            = usingEyeTrackedFoveation ? eyeTrackedCenters.rightX : StaticRightCenterShiftX();
+        float rightY = usingEyeTrackedFoveation ? eyeTrackedCenters.rightY
+                                                : Settings_Instance()->m_foveationCenterShiftY;
+
+        auto fovVars = CalculateFoveationVars(leftX, leftY, rightX, rightY);
+        UpdateBuffer(mImmediateContext.Get(), mFoveatedRenderingBuffer.Get(), &fovVars);
+
+        // Send the exact aligned centers used by the encoder. This keeps the decoder inverse
+        // transform on the same safe, non-degenerate domain.
+        SetEncoderFoveationCenters(
+            targetTimestampNs,
+            fovVars.centerShiftLeftX,
+            fovVars.centerShiftLeftY,
+            fovVars.centerShiftRightX,
+            fovVars.centerShiftRightY
+        );
+    }
+
     for (auto& p : mPipelines) {
         p.Render();
     }

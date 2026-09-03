@@ -9,6 +9,9 @@ license.workspace = true
 [lib]
 crate-type = ["cdylib"]
 
+[features]
+foveation-diagnostics = ["alvr_graphics/foveation-diagnostics"]
+
 [dependencies]
 alvr_common.workspace = true
 alvr_client_core.workspace = true

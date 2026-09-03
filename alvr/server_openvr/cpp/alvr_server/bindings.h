@@ -88,6 +88,14 @@ struct FfiDynamicEncoderParams {
     float framerate;
 };
 
+struct FfiFoveationCenters {
+    bool valid;
+    float leftX;
+    float leftY;
+    float rightX;
+    float rightY;
+};
+
 struct Settings {
     int m_refreshRate;
     unsigned int m_renderWidth;
@@ -98,6 +106,7 @@ struct Settings {
     char m_captureFrameDir[1024];
 
     bool m_enableFoveatedEncoding;
+    bool m_enableFoveationCenterMetadata;
     float m_foveationCenterSizeX;
     float m_foveationCenterSizeY;
     float m_foveationCenterShiftX;
@@ -201,6 +210,10 @@ extern "C" void DriverReadyIdle(bool setDefaultChaprone);
 extern "C" void SetVideoConfigNals(const unsigned char* configBuffer, int len, int codec);
 extern "C" void
 VideoSend(unsigned long long targetTimestampNs, unsigned char* buf, int len, bool isIdr);
+extern "C" FfiFoveationCenters GetEyeTrackedFoveationCenters(unsigned long long targetTimestampNs);
+extern "C" void SetEncoderFoveationCenters(
+    unsigned long long targetTimestampNs, float leftX, float leftY, float rightX, float rightY
+);
 extern "C" void
 HapticsSend(unsigned long long path, float duration_s, float frequency, float amplitude);
 extern "C" void ShutdownRuntime();

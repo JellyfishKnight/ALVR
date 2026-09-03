@@ -65,6 +65,7 @@ pub struct ClientCapabilities {
     pub max_view_resolution: UVec2,
     pub refresh_rates: Vec<f32>,
     pub foveated_encoding: bool,
+    pub foveation_center_metadata: bool,
     pub encoder_high_profile: bool,
     pub encoder_10_bits: bool,
     pub encoder_av1: bool,
@@ -73,13 +74,28 @@ pub struct ClientCapabilities {
     pub prefer_hdr: bool,
 }
 
+#[derive(Clone, Copy)]
+pub struct VideoFrameMetadata {
+    pub view_params: [ViewParams; 2],
+    pub foveation_centers: Option<[Vec2; 2]>,
+}
+
+impl Default for VideoFrameMetadata {
+    fn default() -> Self {
+        Self {
+            view_params: [ViewParams::DUMMY; 2],
+            foveation_centers: None,
+        }
+    }
+}
+
 pub struct ClientCoreContext {
     platform: Platform,
     lifecycle_state: Arc<RwLock<LifecycleState>>,
     event_queue: Arc<Mutex<VecDeque<ClientCoreEvent>>>,
     connection_context: Arc<ConnectionContext>,
     connection_thread: Arc<Mutex<Option<JoinHandle<()>>>>,
-    last_good_global_view_params: Mutex<[ViewParams; 2]>,
+    last_good_video_frame_metadata: Mutex<VideoFrameMetadata>,
 }
 
 impl ClientCoreContext {
@@ -124,7 +140,7 @@ impl ClientCoreContext {
             event_queue,
             connection_context,
             connection_thread: Arc::new(Mutex::new(Some(connection_thread))),
-            last_good_global_view_params: Mutex::new([ViewParams::DUMMY; 2]),
+            last_good_video_frame_metadata: Mutex::new(VideoFrameMetadata::default()),
         }
     }
 
@@ -275,22 +291,25 @@ impl ClientCoreContext {
         *self.connection_context.state.write() = ConnectionState::Disconnecting;
     }
 
-    pub fn report_compositor_start(&self, timestamp: Duration) -> [ViewParams; 2] {
+    pub fn report_compositor_start(&self, timestamp: Duration) -> VideoFrameMetadata {
         dbg_client_core!("report_compositor_start");
 
         if let Some(stats) = &mut *self.connection_context.statistics_manager.lock() {
             stats.report_compositor_start(timestamp);
         }
 
-        let global_view_params_lock = &mut *self.last_good_global_view_params.lock();
-        for (ts, params) in &*self.connection_context.global_view_params_queue.lock() {
-            if *ts == timestamp {
-                *global_view_params_lock = *params;
-                break;
-            }
+        let mut last_good_metadata = self.last_good_video_frame_metadata.lock();
+        if let Some((_, metadata)) = self
+            .connection_context
+            .video_frame_metadata_queue
+            .lock()
+            .iter()
+            .find(|(frame_timestamp, _)| *frame_timestamp == timestamp)
+        {
+            *last_good_metadata = *metadata;
         }
 
-        *global_view_params_lock
+        *last_good_metadata
     }
 
     pub fn report_submit(&self, timestamp: Duration, vsync_queue: Duration) {

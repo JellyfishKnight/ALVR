@@ -1,3 +1,5 @@
+mod external_gaze;
+mod foveated_encoding;
 mod graphics;
 mod props;
 mod tracking;
@@ -16,7 +18,7 @@ use bindings::*;
 
 use alvr_common::{
     BUTTON_INFO, HAND_LEFT_ID, HAND_RIGHT_ID, HAND_TRACKER_LEFT_ID, HAND_TRACKER_RIGHT_ID, HEAD_ID,
-    Pose, ViewParams, error,
+    Pose, ViewParams, error, info,
     parking_lot::{Mutex, RwLock},
     settings_schema::Switch,
     warn,
@@ -27,7 +29,7 @@ use alvr_server_core::{
     HandType, ServerCoreContext, ServerCoreEvent, ServerNegotiatedStreamingConfig,
 };
 use alvr_session::{
-    BodyTrackingSinkConfig, CodecType, ControllersConfig, ControllersEmulationMode,
+    BodyTrackingSinkConfig, CodecType, ControllersConfig, ControllersEmulationMode, GazeInputSource,
 };
 use std::{
     collections::VecDeque,
@@ -183,6 +185,8 @@ fn make_settings(negotiated: Option<&ServerNegotiatedStreamingConfig>) -> Settin
         m_nAdapterIndex: video.adapter_index as i32,
         m_captureFrameDir: capture_frame_dir,
         m_enableFoveatedEncoding: enable_foveated_encoding,
+        m_enableFoveationCenterMetadata: cfg!(target_os = "windows")
+            && negotiated.is_some_and(|config| config.enable_foveation_center_metadata),
         m_foveationCenterSizeX: fov_center_size_x,
         m_foveationCenterSizeY: fov_center_size_y,
         m_foveationCenterShiftX: fov_center_shift_x,
@@ -253,6 +257,8 @@ fn spawn_event_loop(events_receiver: mpsc::Receiver<ServerCoreEvent>) {
         }
 
         let mut last_resync = Instant::now();
+        let mut last_gaze_source = None;
+        let mut enable_dynamic_foveation = false;
         loop {
             let event = match events_receiver.recv_timeout(Duration::from_millis(5)) {
                 Ok(event) => event,
@@ -265,6 +271,12 @@ fn spawn_event_loop(events_receiver: mpsc::Receiver<ServerCoreEvent>) {
                     props::set_openvr_prop(None, device_id, prop)
                 }
                 ServerCoreEvent::ClientConnected(config) => unsafe {
+                    foveated_encoding::reset();
+                    external_gaze::clear_sample();
+                    last_gaze_source = None;
+                    enable_dynamic_foveation =
+                        cfg!(target_os = "windows") && config.enable_foveation_center_metadata;
+
                     if InitializeStreaming(make_settings(Some(&config))) {
                         RequestDriverResync();
                     } else {
@@ -274,7 +286,13 @@ fn spawn_event_loop(events_receiver: mpsc::Receiver<ServerCoreEvent>) {
                     }
                 },
 
-                ServerCoreEvent::ClientDisconnected => unsafe { DeinitializeStreaming() },
+                ServerCoreEvent::ClientDisconnected => unsafe {
+                    foveated_encoding::reset();
+                    external_gaze::clear_sample();
+                    last_gaze_source = None;
+                    enable_dynamic_foveation = false;
+                    DeinitializeStreaming()
+                },
                 ServerCoreEvent::Battery(info) => unsafe {
                     SetBattery(info.device_id, info.gauge_value, info.is_plugged)
                 },
@@ -290,8 +308,33 @@ fn spawn_event_loop(events_receiver: mpsc::Receiver<ServerCoreEvent>) {
                     ];
                     SetLocalViewParams(ffi_params.as_ptr());
                 },
-                ServerCoreEvent::Tracking { poll_timestamp } => {
-                    let headset_config = &alvr_server_core::settings().headset;
+                ServerCoreEvent::Tracking {
+                    poll_timestamp,
+                    gaze,
+                } => {
+                    let settings = alvr_server_core::settings();
+                    let headset_config = &settings.headset;
+
+                    if enable_dynamic_foveation
+                        && let Switch::Enabled(config) = &settings.video.foveated_encoding
+                    {
+                        let view_params = *LOCAL_VIEW_PARAMS.read();
+                        let gaze_source = foveated_encoding::update(
+                            poll_timestamp,
+                            external_gaze::latest_sample(poll_timestamp),
+                            gaze,
+                            view_params,
+                            config,
+                        );
+
+                        if last_gaze_source != Some(gaze_source) {
+                            info!(
+                                "[Eye-tracked foveation] source: {}",
+                                gaze_source.description()
+                            );
+                            last_gaze_source = Some(gaze_source);
+                        }
+                    }
 
                     let controllers_config = headset_config.controllers.clone().into_option();
                     let track_body = headset_config.body_tracking.enabled();
@@ -610,7 +653,15 @@ extern "C" fn send_video(timestamp_ns: u64, buffer_ptr: *mut u8, len: i32, is_id
             },
         ];
 
-        context.send_video_nal(timestamp, global_view_params, is_idr, buffer.to_vec());
+        let foveation_centers = foveated_encoding::rendered_centers(timestamp);
+
+        context.send_video_nal(
+            timestamp,
+            global_view_params,
+            foveation_centers,
+            is_idr,
+            buffer.to_vec(),
+        );
     }
 }
 
@@ -681,6 +732,7 @@ extern "C" fn wait_for_vsync() {
 #[unsafe(export_name = "ShutdownRuntime")]
 pub extern "C" fn shutdown_driver() {
     SERVER_CORE_CONTEXT.write().take();
+    external_gaze::stop_receiver();
 
     // join driver threads so the dll isn't unloaded while they're still running
     if let Some(handle) = EVENT_LOOP_HANDLE.lock().take() {
@@ -803,6 +855,17 @@ pub extern "C" fn initialize_runtime() {
         };
 
         graphics::initialize_shaders();
+
+        if let Switch::Enabled(config) = &alvr_server_core::settings().video.foveated_encoding {
+            let external_gaze_port = match config.gaze_input_source {
+                GazeInputSource::ExternalUdp { port } => Some(port),
+                GazeInputSource::None | GazeInputSource::Headset => None,
+            };
+
+            if let Some(port) = external_gaze_port {
+                external_gaze::start_receiver(port);
+            }
+        }
 
         unsafe {
             CppInit(init_data.early_hmd_initialization, make_settings(None));

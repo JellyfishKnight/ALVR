@@ -5,6 +5,8 @@ use crate::{
         FacialTrackerHTC, MotionTrackerBD, MultimodalMeta,
     },
 };
+#[cfg(feature = "foveation-diagnostics")]
+use alvr_common::parking_lot::Mutex;
 use alvr_common::{
     glam::{Quat, Vec3},
     *,
@@ -20,6 +22,11 @@ use std::{
 use xr::SpaceLocationFlags;
 
 const IPD_CHANGE_EPS: f32 = 0.001;
+#[cfg(feature = "foveation-diagnostics")]
+const EYE_GAZE_DIAGNOSTIC_LOG_INTERVAL: Duration = Duration::from_millis(500);
+
+#[cfg(feature = "foveation-diagnostics")]
+static LAST_EYE_GAZE_DIAGNOSTIC_LOG_TIMESTAMP: Mutex<Option<Duration>> = Mutex::new(None);
 
 // Most OpenXR runtime, including Meta's one, do not follow perfectly the specification regarding
 // controller pose. The Z axis should point down through the center of the controller grip, the X
@@ -965,25 +972,128 @@ pub fn update_buttons(
 // Note: Using the headset view space in order to get heading-independent eye gazes
 pub fn get_face_data(
     xr_session: &xr::Session<xr::OpenGlEs>,
+    platform: Platform,
     sources: &FaceSources,
+    stage_reference_space: &xr::Space,
     view_reference_space: &xr::Space,
+    head_orientation: Quat,
     time: Duration,
 ) -> FaceData {
     let xr_time = crate::to_xr_time(time);
+    let pico_eye_gaze_workaround = matches!(
+        platform,
+        Platform::PicoNeo3 | Platform::Pico4Pro | Platform::Pico4Enterprise
+    );
 
-    let eyes_combined = if let Some((action, space)) = &sources.eyes_combined
-        && action
+    let eye_gaze_action_active = sources.eyes_combined.as_ref().is_some_and(|(action, _)| {
+        action
             .is_active(xr_session, xr::Path::NULL)
             .unwrap_or(false)
-        && let Ok(location) = space.locate(view_reference_space, xr_time)
+    });
+    let eyes_combined = if let Some((_, space)) = &sources.eyes_combined
+        && eye_gaze_action_active
+        // The legacy PICO OpenXR runtime reports VIEW-relative gaze as orientation-valid but not
+        // orientation-tracked, and returns an identity orientation even while STAGE-relative gaze
+        // is tracked and changing. Locate gaze in STAGE space and remove the current head rotation
+        // to recover the same head-local convention used by other runtimes.
+        && let Ok(location) = space.locate(
+            if pico_eye_gaze_workaround {
+                stage_reference_space
+            } else {
+                view_reference_space
+            },
+            xr_time,
+        )
         && location
             .location_flags
             .contains(xr::SpaceLocationFlags::ORIENTATION_VALID)
     {
-        Some(crate::from_xr_quat(location.pose.orientation))
+        let orientation = crate::from_xr_quat(location.pose.orientation);
+
+        Some(if pico_eye_gaze_workaround {
+            head_orientation.inverse() * orientation
+        } else {
+            orientation
+        })
     } else {
         None
     };
+
+    #[cfg(feature = "foveation-diagnostics")]
+    {
+        let mut last_log_timestamp = LAST_EYE_GAZE_DIAGNOSTIC_LOG_TIMESTAMP.lock();
+        let should_log = match *last_log_timestamp {
+            Some(last_timestamp) => {
+                time < last_timestamp
+                    || time.saturating_sub(last_timestamp) >= EYE_GAZE_DIAGNOSTIC_LOG_INTERVAL
+            }
+            None => true,
+        };
+
+        if should_log {
+            if pico_eye_gaze_workaround && let Some((_, space)) = &sources.eyes_combined {
+                let view_location = space.locate(view_reference_space, xr_time);
+                let stage_location = space.locate(stage_reference_space, xr_time);
+
+                match (view_location, stage_location) {
+                    (Ok(view_location), Ok(stage_location)) => {
+                        let view_direction = view_location
+                            .location_flags
+                            .contains(xr::SpaceLocationFlags::ORIENTATION_VALID)
+                            .then(|| {
+                                crate::from_xr_quat(view_location.pose.orientation) * Vec3::NEG_Z
+                            });
+                        let stage_head_local_direction = stage_location
+                            .location_flags
+                            .contains(xr::SpaceLocationFlags::ORIENTATION_VALID)
+                            .then(|| {
+                                head_orientation.inverse()
+                                    * crate::from_xr_quat(stage_location.pose.orientation)
+                                    * Vec3::NEG_Z
+                            });
+
+                        info!(
+                            "[PICO gaze reference diagnostic] view_flags={:?}, \
+                             view_direction={view_direction:?}, stage_flags={:?}, \
+                             stage_head_local_direction={stage_head_local_direction:?}",
+                            view_location.location_flags, stage_location.location_flags,
+                        );
+                    }
+                    (view_result, stage_result) => {
+                        info!(
+                            "[PICO gaze reference diagnostic] view_locate_ok={}, stage_locate_ok={}",
+                            view_result.is_ok(),
+                            stage_result.is_ok(),
+                        );
+                    }
+                }
+            }
+
+            if let Some(orientation) = eyes_combined {
+                let direction = orientation * Vec3::NEG_Z;
+                info!(
+                    "[Eye gaze diagnostic] source_configured=true, action_active=true, \
+                     valid_sample=true, orientation=({:.4},{:.4},{:.4},{:.4}), \
+                     direction=({:.4},{:.4},{:.4})",
+                    orientation.x,
+                    orientation.y,
+                    orientation.z,
+                    orientation.w,
+                    direction.x,
+                    direction.y,
+                    direction.z,
+                );
+            } else {
+                info!(
+                    "[Eye gaze diagnostic] source_configured={}, action_active={}, \
+                     valid_sample=false",
+                    sources.eyes_combined.is_some(),
+                    eye_gaze_action_active,
+                );
+            }
+            *last_log_timestamp = Some(time);
+        }
+    }
 
     let eyes_social = if let Some(tracker) = &sources.eyes_social
         && let Ok(gazes) = tracker.get_eye_gazes(view_reference_space, xr_time)

@@ -6,6 +6,9 @@ rust-version.workspace = true
 authors.workspace = true
 license.workspace = true
 
+[features]
+foveation-diagnostics = []
+
 [dependencies]
 alvr_common.workspace = true
 alvr_session.workspace = true

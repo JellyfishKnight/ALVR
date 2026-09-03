@@ -3,7 +3,7 @@ use crate::{
     interaction::{self, InteractionContext, InteractionSourcesConfig},
 };
 use alvr_client_core::{
-    ClientCoreContext,
+    ClientCoreContext, VideoFrameMetadata,
     video_decoder::{self, VideoDecoderConfig, VideoDecoderSource},
 };
 use alvr_common::{
@@ -14,6 +14,8 @@ use alvr_common::{
     glam::{UVec2, Vec2},
     parking_lot::RwLock,
 };
+#[cfg(feature = "foveation-diagnostics")]
+use alvr_common::{info, parking_lot::Mutex};
 use alvr_graphics::{GraphicsContext, StreamRenderer, StreamViewParams};
 use alvr_packets::{ClientStreamConfig, RealTimeConfig, TrackingData};
 use alvr_session::{
@@ -31,6 +33,11 @@ use std::{
 };
 
 const DECODER_MAX_TIMEOUT_MULTIPLIER: f32 = 0.8;
+#[cfg(feature = "foveation-diagnostics")]
+const FOVEATION_DIAGNOSTIC_LOG_INTERVAL: Duration = Duration::from_millis(500);
+
+#[cfg(feature = "foveation-diagnostics")]
+static LAST_FOVEATION_DIAGNOSTIC_LOG_TIME: Mutex<Option<Instant>> = Mutex::new(None);
 
 pub struct ParsedStreamConfig {
     pub view_resolution: UVec2,
@@ -91,7 +98,7 @@ pub struct StreamContext {
     stage_reference_space: Arc<xr::Space>,
     view_reference_space: Arc<xr::Space>,
     swapchains: [xr::Swapchain<xr::OpenGlEs>; 2],
-    last_good_view_params: [ViewParams; 2],
+    last_good_video_frame_metadata: VideoFrameMetadata,
     input_thread: Option<JoinHandle<()>>,
     input_thread_running: Arc<RelaxedAtomic>,
     config: ParsedStreamConfig,
@@ -235,7 +242,7 @@ impl StreamContext {
             stage_reference_space,
             view_reference_space,
             swapchains,
-            last_good_view_params: [ViewParams::DUMMY; 2],
+            last_good_video_frame_metadata: VideoFrameMetadata::default(),
             input_thread: None,
             input_thread_running,
             config,
@@ -355,16 +362,49 @@ impl StreamContext {
             }
         }
 
-        let (timestamp, view_params, buffer_ptr) =
+        let (timestamp, frame_metadata, buffer_ptr) =
             if let Some((timestamp, buffer_ptr)) = frame_result {
-                let view_params = self.core_context.report_compositor_start(timestamp);
+                let metadata = self.core_context.report_compositor_start(timestamp);
+                self.last_good_video_frame_metadata = metadata;
 
-                self.last_good_view_params = view_params;
-
-                (timestamp, view_params, buffer_ptr)
+                (timestamp, metadata, buffer_ptr)
             } else {
-                (vsync_time, self.last_good_view_params, ptr::null_mut())
+                (
+                    vsync_time,
+                    self.last_good_video_frame_metadata,
+                    ptr::null_mut(),
+                )
             };
+        let view_params = frame_metadata.view_params;
+
+        #[cfg(feature = "foveation-diagnostics")]
+        if !buffer_ptr.is_null() {
+            let now = Instant::now();
+            let mut last_log_time = LAST_FOVEATION_DIAGNOSTIC_LOG_TIME.lock();
+            let should_log = last_log_time
+                .map(|last_time| now.duration_since(last_time) >= FOVEATION_DIAGNOSTIC_LOG_INTERVAL)
+                .unwrap_or(true);
+
+            if should_log {
+                if let Some([left, right]) = frame_metadata.foveation_centers {
+                    info!(
+                        "[Foveation frame diagnostic] timestamp_ns={}, \
+                         left_center=({:.4},{:.4}), right_center=({:.4},{:.4})",
+                        timestamp.as_nanos(),
+                        left.x,
+                        left.y,
+                        right.x,
+                        right.y,
+                    );
+                } else {
+                    info!(
+                        "[Foveation frame diagnostic] timestamp_ns={}, centers=None",
+                        timestamp.as_nanos()
+                    );
+                }
+                *last_log_time = Some(now);
+            }
+        }
 
         let left_swapchain_idx = self.swapchains[0].acquire_image().unwrap();
         let right_swapchain_idx = self.swapchains[1].acquire_image().unwrap();
@@ -435,6 +475,7 @@ impl StreamContext {
                 },
             ],
             self.config.passthrough.as_ref(),
+            frame_metadata.foveation_centers,
         );
 
         self.swapchains[0].release_image().unwrap();
@@ -614,8 +655,11 @@ fn stream_input_loop(
 
         let face = interaction::get_face_data(
             &xr_session,
+            core_ctx.platform(),
             &int_ctx.face_sources,
+            stage_reference_space,
             view_reference_space,
+            head_motion.pose.orientation,
             now,
         );
 

@@ -578,6 +578,7 @@ fn connection_pipeline(
     let Some(streaming_caps) = maybe_streaming_caps else {
         con_bail!("Only streaming clients are supported for now");
     };
+    let streaming_caps_ext = streaming_caps.ext().to_con()?;
 
     let initial_settings = session_manager_lock.settings().clone();
 
@@ -677,6 +678,8 @@ fn connection_pipeline(
         } else {
             false
         };
+    let enable_foveation_center_metadata =
+        enable_foveated_encoding && streaming_caps_ext.foveation_center_metadata;
 
     let encoder_profile = if initial_settings.video.encoder_config.h264_profile == H264Profile::High
     {
@@ -1377,6 +1380,7 @@ fn connection_pipeline(
                 emulated_headset_view_resolution: transcoding_view_resolution,
                 refresh_rate: fps as _,
                 enable_foveated_encoding,
+                enable_foveation_center_metadata,
                 codec,
                 h264_profile: encoder_profile,
                 use_10bit_encoder: enable_10_bits_encoding,
