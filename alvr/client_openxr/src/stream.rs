@@ -435,6 +435,7 @@ impl StreamContext {
                 },
             ],
             self.config.passthrough.as_ref(),
+            None,
         );
 
         self.swapchains[0].release_image().unwrap();

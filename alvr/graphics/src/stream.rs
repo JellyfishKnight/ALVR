@@ -1,18 +1,19 @@
 use super::{GraphicsContext, MAX_PUSH_CONSTANTS_SIZE, staging::StagingRenderer};
 use alvr_common::{
     ViewParams,
-    glam::{self, Mat4, UVec2, Vec3, Vec4},
+    glam::{self, Mat4, UVec2, Vec2, Vec3, Vec4},
 };
 use alvr_session::{FoveatedEncodingConfig, PassthroughMode, UpscalingConfig};
-use std::{ffi::c_void, iter, mem, rc::Rc};
+use std::{cell::Cell, ffi::c_void, iter, mem, rc::Rc};
 use wgpu::{
     BindGroup, BindGroupDescriptor, BindGroupEntry, BindGroupLayoutDescriptor,
-    BindGroupLayoutEntry, BindingResource, BindingType, Color, ColorTargetState, ColorWrites,
-    FragmentState, LoadOp, PipelineCompilationOptions, PipelineLayoutDescriptor, PrimitiveState,
-    PrimitiveTopology, PushConstantRange, RenderPass, RenderPassColorAttachment,
-    RenderPassDescriptor, RenderPipeline, RenderPipelineDescriptor, SamplerBindingType,
-    SamplerDescriptor, ShaderStages, StoreOp, TextureSampleType, TextureView,
-    TextureViewDescriptor, TextureViewDimension, VertexState, include_wgsl,
+    BindGroupLayoutEntry, BindingResource, BindingType, Buffer, BufferBindingType,
+    BufferDescriptor, BufferUsages, Color, ColorTargetState, ColorWrites, FragmentState, LoadOp,
+    PipelineCompilationOptions, PipelineLayoutDescriptor, PrimitiveState, PrimitiveTopology,
+    PushConstantRange, RenderPass, RenderPassColorAttachment, RenderPassDescriptor, RenderPipeline,
+    RenderPipelineDescriptor, SamplerBindingType, SamplerDescriptor, ShaderStages, StoreOp,
+    TextureSampleType, TextureView, TextureViewDescriptor, TextureViewDimension, VertexState,
+    include_wgsl,
 };
 
 const FLOAT_SIZE: u32 = mem::size_of::<f32>() as u32;
@@ -28,11 +29,18 @@ const CK_CHANNEL0_CONST_OFFSET: u32 = ALPHA_CONST_OFFSET + FLOAT_SIZE + U32_SIZE
 const CK_CHANNEL1_CONST_OFFSET: u32 = CK_CHANNEL0_CONST_OFFSET + VEC4_SIZE;
 const CK_CHANNEL2_CONST_OFFSET: u32 = CK_CHANNEL1_CONST_OFFSET + VEC4_SIZE;
 const PUSH_CONSTANTS_SIZE: u32 = CK_CHANNEL2_CONST_OFFSET + VEC4_SIZE;
-
+const FOVEATION_EYE_UNIFORM_VEC4_COUNT: usize = 5;
+const FOVEATION_UNIFORM_VEC4_COUNT: usize = 1 + FOVEATION_EYE_UNIFORM_VEC4_COUNT * 2;
+const FOVEATION_UNIFORM_SIZE: usize = FOVEATION_UNIFORM_VEC4_COUNT * mem::size_of::<Vec4>();
 const _: () = assert!(
     PUSH_CONSTANTS_SIZE <= MAX_PUSH_CONSTANTS_SIZE,
     "Push constants size exceeds the maximum size"
 );
+
+enum FoveationCenterShifts {
+    Requested([Vec2; 2]),
+    Aligned([Vec2; 2]),
+}
 
 pub struct StreamViewParams {
     pub swapchain_index: u32,
@@ -51,6 +59,10 @@ pub struct StreamRenderer {
     staging_renderer: StagingRenderer,
     pipeline: RenderPipeline,
     views_objects: [ViewObjects; 2],
+    base_view_resolution: UVec2,
+    foveated_encoding: Option<FoveatedEncodingConfig>,
+    foveation_buffer: Buffer,
+    last_foveation_center_shifts: Cell<Option<[Vec2; 2]>>,
 }
 
 impl StreamRenderer {
@@ -91,6 +103,16 @@ impl StreamRenderer {
                     ty: BindingType::Sampler(SamplerBindingType::Filtering),
                     count: None,
                 },
+                BindGroupLayoutEntry {
+                    binding: 2,
+                    visibility: ShaderStages::FRAGMENT,
+                    ty: BindingType::Buffer {
+                        ty: BufferBindingType::Uniform,
+                        has_dynamic_offset: false,
+                        min_binding_size: None,
+                    },
+                    count: None,
+                },
             ],
         });
 
@@ -103,15 +125,37 @@ impl StreamRenderer {
             ("ENCODING_GAMMA", encoding_gamma.into()),
         ]);
 
-        let staging_resolution = if let Some(foveated_encoding) = foveated_encoding {
-            let (staging_resolution, ffe_constants) =
-                foveated_encoding_shader_constants(base_view_resolution, foveated_encoding);
-            constants.extend(ffe_constants);
+        let (staging_resolution, initial_foveation_uniforms) =
+            if let Some(config) = &foveated_encoding {
+                foveated_encoding_data(
+                    base_view_resolution,
+                    config,
+                    FoveationCenterShifts::Requested(static_foveation_center_shifts(config)),
+                )
+            } else {
+                (
+                    base_view_resolution,
+                    [Vec4::ZERO; FOVEATION_UNIFORM_VEC4_COUNT],
+                )
+            };
 
-            staging_resolution
-        } else {
-            base_view_resolution
-        };
+        constants.push(("ENABLE_FFE", foveated_encoding.is_some().into()));
+
+        let foveation_buffer = device.create_buffer(&BufferDescriptor {
+            label: Some("stream foveation uniforms"),
+            size: FOVEATION_UNIFORM_SIZE as u64,
+            usage: BufferUsages::UNIFORM | BufferUsages::COPY_DST,
+            mapped_at_creation: false,
+        });
+        context.queue.write_buffer(
+            &foveation_buffer,
+            0,
+            &foveation_uniform_bytes(&initial_foveation_uniforms),
+        );
+
+        if foveated_encoding.is_none() {
+            debug_assert_eq!(staging_resolution, base_view_resolution);
+        }
 
         if let Some(upscaling) = upscaling {
             constants.extend([
@@ -196,6 +240,10 @@ impl StreamRenderer {
                         binding: 1,
                         resource: BindingResource::Sampler(&sampler),
                     },
+                    BindGroupEntry {
+                        binding: 2,
+                        resource: foveation_buffer.as_entire_binding(),
+                    },
                 ],
             });
 
@@ -238,6 +286,10 @@ impl StreamRenderer {
             staging_renderer,
             pipeline,
             views_objects: view_objects.try_into().unwrap(),
+            base_view_resolution,
+            foveated_encoding,
+            foveation_buffer,
+            last_foveation_center_shifts: Cell::new(None),
         }
     }
 
@@ -248,10 +300,29 @@ impl StreamRenderer {
         hardware_buffer: *mut c_void,
         view_params: [StreamViewParams; 2],
         passthrough: Option<&PassthroughMode>,
+        foveation_center_shifts: Option<[Vec2; 2]>,
     ) {
         // if hardware_buffer is available copy stream to staging texture
         if !hardware_buffer.is_null() {
             self.staging_renderer.render(hardware_buffer);
+        }
+
+        if let Some(config) = &self.foveated_encoding
+            && self.last_foveation_center_shifts.get() != foveation_center_shifts
+        {
+            let centers = if let Some(center_shifts) = foveation_center_shifts {
+                FoveationCenterShifts::Aligned(center_shifts)
+            } else {
+                FoveationCenterShifts::Requested(static_foveation_center_shifts(config))
+            };
+            let (_, uniforms) = foveated_encoding_data(self.base_view_resolution, config, centers);
+            self.context.queue.write_buffer(
+                &self.foveation_buffer,
+                0,
+                &foveation_uniform_bytes(&uniforms),
+            );
+            self.last_foveation_center_shifts
+                .set(foveation_center_shifts);
         }
 
         let mut encoder = self
@@ -332,6 +403,11 @@ impl StreamRenderer {
 
         self.context.queue.submit(iter::once(encoder.finish()));
     }
+}
+
+fn static_foveation_center_shifts(config: &FoveatedEncodingConfig) -> [Vec2; 2] {
+    // If no runtime override is provided, retain the legacy static transform.
+    [Vec2::new(config.center_shift_x, config.center_shift_y); 2]
 }
 
 fn set_passthrough_push_constants(render_pass: &mut RenderPass, config: Option<&PassthroughMode>) {
@@ -437,14 +513,14 @@ fn set_passthrough_push_constants(render_pass: &mut RenderPass, config: Option<&
     }
 }
 
-pub fn foveated_encoding_shader_constants(
+fn foveated_encoding_data(
     expanded_view_resolution: UVec2,
-    config: FoveatedEncodingConfig,
-) -> (UVec2, Vec<(&'static str, f64)>) {
+    config: &FoveatedEncodingConfig,
+    center_shifts: FoveationCenterShifts,
+) -> (UVec2, [Vec4; FOVEATION_UNIFORM_VEC4_COUNT]) {
     let view_resolution = expanded_view_resolution.as_vec2();
 
     let center_size = glam::vec2(config.center_size_x, config.center_size_y);
-    let center_shift = glam::vec2(config.center_shift_x, config.center_shift_y);
     let edge_ratio = glam::vec2(config.edge_ratio_x, config.edge_ratio_y);
 
     let edge_size = view_resolution - center_size * view_resolution;
@@ -452,10 +528,6 @@ pub fn foveated_encoding_shader_constants(
         1. - (edge_size / (edge_ratio * 2.)).ceil() * (edge_ratio * 2.) / view_resolution;
 
     let edge_size_aligned = view_resolution - center_size_aligned * view_resolution;
-    let center_shift_aligned = (center_shift * edge_size_aligned / (edge_ratio * 2.)).ceil()
-        * (edge_ratio * 2.)
-        / edge_size_aligned;
-
     let foveation_scale = center_size_aligned + (1. - center_size_aligned) / edge_ratio;
 
     let optimized_view_resolution = foveation_scale * view_resolution;
@@ -466,55 +538,130 @@ pub fn foveated_encoding_shader_constants(
     let view_ratio_aligned = optimized_view_resolution / optimized_view_resolution_aligned;
 
     let c0 = (1. - center_size_aligned) * 0.5;
-    let c1 = (edge_ratio - 1.) * c0 * (center_shift_aligned + 1.) / edge_ratio;
     let c2 = (edge_ratio - 1.) * center_size_aligned + 1.;
 
-    let lo_bound = c0 * (center_shift_aligned + 1.);
-    let hi_bound = c0 * (center_shift_aligned - 1.) + 1.;
-    let lo_bound_c = c0 * (center_shift_aligned + 1.) / c2;
-    let hi_bound_c = c0 * (center_shift_aligned - 1.) / c2 + 1.;
+    let center_shifts = match center_shifts {
+        FoveationCenterShifts::Requested(center_shifts) => center_shifts.map(|center_shift| {
+            glam::vec2(
+                align_center_shift(center_shift.x, edge_size_aligned.x, edge_ratio.x),
+                align_center_shift(center_shift.y, edge_size_aligned.y, edge_ratio.y),
+            )
+        }),
+        FoveationCenterShifts::Aligned(center_shifts) => center_shifts.map(|center_shift| {
+            glam::vec2(
+                sanitize_aligned_center_shift(center_shift.x, edge_size_aligned.x, edge_ratio.x),
+                sanitize_aligned_center_shift(center_shift.y, edge_size_aligned.y, edge_ratio.y),
+            )
+        }),
+    };
 
-    let a_left = c2 * (1. - edge_ratio) / (edge_ratio * lo_bound_c);
-    let b_left = (c1 + c2 * lo_bound_c) / lo_bound_c;
+    let mut uniforms = [Vec4::ZERO; FOVEATION_UNIFORM_VEC4_COUNT];
+    let [common_uniform, eye_uniforms @ ..] = &mut uniforms;
+    *common_uniform = Vec4::new(
+        view_ratio_aligned.x,
+        view_ratio_aligned.y,
+        edge_ratio.x,
+        edge_ratio.y,
+    );
 
-    let a_right = c2 * (edge_ratio - 1.) / (edge_ratio * (1. - hi_bound_c));
-    let b_right = (c2 - edge_ratio * c1 - 2. * edge_ratio * c2
-        + c2 * edge_ratio * (1. - hi_bound_c)
-        + edge_ratio)
-        / (edge_ratio * (1. - hi_bound_c));
-    let c_right = (c2 * edge_ratio - c2) * (c1 - hi_bound_c + c2 * hi_bound_c)
-        / (edge_ratio * (1. - hi_bound_c) * (1. - hi_bound_c));
+    for (uniforms, center_shift) in eye_uniforms
+        .chunks_exact_mut(FOVEATION_EYE_UNIFORM_VEC4_COUNT)
+        .zip(center_shifts)
+    {
+        let c1 = (edge_ratio - 1.) * c0 * (center_shift + 1.) / edge_ratio;
+        let lo_bound = c0 * (center_shift + 1.);
+        let hi_bound = c0 * (center_shift - 1.) + 1.;
+        let lo_bound_c = c0 * (center_shift + 1.) / c2;
+        let hi_bound_c = c0 * (center_shift - 1.) / c2 + 1.;
 
-    let constants = [
-        ("ENABLE_FFE", 1.),
-        ("VIEW_WIDTH_RATIO", view_ratio_aligned.x),
-        ("VIEW_HEIGHT_RATIO", view_ratio_aligned.y),
-        ("EDGE_X_RATIO", edge_ratio.x),
-        ("EDGE_Y_RATIO", edge_ratio.y),
-        ("C1_X", c1.x),
-        ("C1_Y", c1.y),
-        ("C2_X", c2.x),
-        ("C2_Y", c2.y),
-        ("LO_BOUND_X", lo_bound.x),
-        ("LO_BOUND_Y", lo_bound.y),
-        ("HI_BOUND_X", hi_bound.x),
-        ("HI_BOUND_Y", hi_bound.y),
-        ("A_LEFT_X", a_left.x),
-        ("A_LEFT_Y", a_left.y),
-        ("B_LEFT_X", b_left.x),
-        ("B_LEFT_Y", b_left.y),
-        ("A_RIGHT_X", a_right.x),
-        ("A_RIGHT_Y", a_right.y),
-        ("B_RIGHT_X", b_right.x),
-        ("B_RIGHT_Y", b_right.y),
-        ("C_RIGHT_X", c_right.x),
-        ("C_RIGHT_Y", c_right.y),
-    ]
-    .iter()
-    .map(|(k, v)| (*k, *v as f64))
-    .collect();
+        let a_left = c2 * (1. - edge_ratio) / (edge_ratio * lo_bound_c);
+        let b_left = (c1 + c2 * lo_bound_c) / lo_bound_c;
 
-    (optimized_view_resolution_aligned.as_uvec2(), constants)
+        let a_right = c2 * (edge_ratio - 1.) / (edge_ratio * (1. - hi_bound_c));
+        let b_right = (c2 - edge_ratio * c1 - 2. * edge_ratio * c2
+            + c2 * edge_ratio * (1. - hi_bound_c)
+            + edge_ratio)
+            / (edge_ratio * (1. - hi_bound_c));
+        let c_right = (c2 * edge_ratio - c2) * (c1 - hi_bound_c + c2 * hi_bound_c)
+            / (edge_ratio * (1. - hi_bound_c) * (1. - hi_bound_c));
+
+        let [center, bounds, left, right, right_curve] = uniforms else {
+            unreachable!("foveation eye uniform chunk must contain five vectors");
+        };
+        *center = Vec4::new(c1.x, c1.y, c2.x, c2.y);
+        *bounds = Vec4::new(lo_bound.x, lo_bound.y, hi_bound.x, hi_bound.y);
+        *left = Vec4::new(a_left.x, a_left.y, b_left.x, b_left.y);
+        *right = Vec4::new(a_right.x, a_right.y, b_right.x, b_right.y);
+        *right_curve = Vec4::new(c_right.x, c_right.y, 0.0, 0.0);
+    }
+
+    (optimized_view_resolution_aligned.as_uvec2(), uniforms)
+}
+
+fn align_center_shift(center_shift: f32, edge_size_aligned: f32, edge_ratio: f32) -> f32 {
+    let Some(alignment_step) =
+        center_shift_alignment_step(center_shift, edge_size_aligned, edge_ratio)
+    else {
+        return 0.0;
+    };
+
+    // The inverse coefficients are singular at exactly +/-1. Match the server
+    // by reserving one encoder-alignment step for both peripheral segments.
+    // Keep the legacy operation order. Although this is algebraically equivalent to dividing by
+    // alignment_step, the latter can round across an integer boundary with f32 inputs.
+    let aligned = (center_shift * edge_size_aligned / (edge_ratio * 2.0)).ceil()
+        * (edge_ratio * 2.0)
+        / edge_size_aligned;
+
+    aligned.clamp(-1.0 + alignment_step, 1.0 - alignment_step)
+}
+
+fn sanitize_aligned_center_shift(
+    center_shift: f32,
+    edge_size_aligned: f32,
+    edge_ratio: f32,
+) -> f32 {
+    let Some(alignment_step) =
+        center_shift_alignment_step(center_shift, edge_size_aligned, edge_ratio)
+    else {
+        return 0.0;
+    };
+
+    center_shift.clamp(-1.0 + alignment_step, 1.0 - alignment_step)
+}
+
+fn center_shift_alignment_step(
+    center_shift: f32,
+    edge_size_aligned: f32,
+    edge_ratio: f32,
+) -> Option<f32> {
+    if !center_shift.is_finite()
+        || !edge_size_aligned.is_finite()
+        || !edge_ratio.is_finite()
+        || edge_size_aligned <= 0.0
+        || edge_ratio <= 0.0
+    {
+        return None;
+    }
+
+    let alignment_step = edge_ratio * 2.0 / edge_size_aligned;
+
+    (alignment_step.is_finite() && alignment_step < 1.0).then_some(alignment_step)
+}
+
+fn foveation_uniform_bytes(
+    uniforms: &[Vec4; FOVEATION_UNIFORM_VEC4_COUNT],
+) -> [u8; FOVEATION_UNIFORM_SIZE] {
+    let mut bytes = [0; FOVEATION_UNIFORM_SIZE];
+
+    for (chunk, value) in bytes
+        .chunks_exact_mut(mem::size_of::<f32>())
+        .zip(uniforms.iter().flat_map(|value| value.to_array()))
+    {
+        chunk.copy_from_slice(&value.to_ne_bytes());
+    }
+
+    bytes
 }
 
 pub fn compute_target_view_resolution(
