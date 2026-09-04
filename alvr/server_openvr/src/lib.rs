@@ -1,3 +1,4 @@
+mod foveation_metadata;
 mod graphics;
 mod props;
 mod tracking;
@@ -183,6 +184,8 @@ fn make_settings(negotiated: Option<&ServerNegotiatedStreamingConfig>) -> Settin
         m_nAdapterIndex: video.adapter_index as i32,
         m_captureFrameDir: capture_frame_dir,
         m_enableFoveatedEncoding: enable_foveated_encoding,
+        m_enableFoveationCenterMetadata: negotiated
+            .is_some_and(|config| config.enable_foveation_center_metadata),
         m_foveationCenterSizeX: fov_center_size_x,
         m_foveationCenterSizeY: fov_center_size_y,
         m_foveationCenterShiftX: fov_center_shift_x,
@@ -265,6 +268,8 @@ fn spawn_event_loop(events_receiver: mpsc::Receiver<ServerCoreEvent>) {
                     props::set_openvr_prop(None, device_id, prop)
                 }
                 ServerCoreEvent::ClientConnected(config) => unsafe {
+                    foveation_metadata::reset();
+
                     if InitializeStreaming(make_settings(Some(&config))) {
                         RequestDriverResync();
                     } else {
@@ -274,7 +279,10 @@ fn spawn_event_loop(events_receiver: mpsc::Receiver<ServerCoreEvent>) {
                     }
                 },
 
-                ServerCoreEvent::ClientDisconnected => unsafe { DeinitializeStreaming() },
+                ServerCoreEvent::ClientDisconnected => unsafe {
+                    foveation_metadata::reset();
+                    DeinitializeStreaming()
+                },
                 ServerCoreEvent::Battery(info) => unsafe {
                     SetBattery(info.device_id, info.gauge_value, info.is_plugged)
                 },
@@ -610,7 +618,13 @@ extern "C" fn send_video(timestamp_ns: u64, buffer_ptr: *mut u8, len: i32, is_id
             },
         ];
 
-        context.send_video_nal(timestamp, global_view_params, is_idr, buffer.to_vec());
+        context.send_video_nal(
+            timestamp,
+            global_view_params,
+            foveation_metadata::rendered_centers(timestamp),
+            is_idr,
+            buffer.to_vec(),
+        );
     }
 }
 

@@ -99,6 +99,21 @@ uint32_t FrameRender::GetEncodingWidth() const { return m_width; }
 
 uint32_t FrameRender::GetEncodingHeight() const { return m_height; }
 
+void FrameRender::Render(uint32_t index, uint64_t waitValue, uint64_t targetTimestampNs) {
+    if (Settings_Instance()->m_enableFoveatedEncoding
+        && Settings_Instance()->m_enableFoveationCenterMetadata) {
+        SetEncoderFoveationCenters(
+            targetTimestampNs,
+            m_foveationCenterShifts.leftX,
+            m_foveationCenterShifts.leftY,
+            m_foveationCenterShifts.rightX,
+            m_foveationCenterShifts.rightY
+        );
+    }
+
+    Renderer::Render(index, waitValue);
+}
+
 void FrameRender::setupColorCorrection() {
     std::vector<VkSpecializationMapEntry> entries;
 

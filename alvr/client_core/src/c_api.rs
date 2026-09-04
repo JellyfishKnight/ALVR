@@ -218,6 +218,7 @@ pub extern "C" fn alvr_initialize(capabilities: AlvrClientCapabilities) {
         max_view_resolution,
         refresh_rates,
         foveated_encoding: capabilities.foveated_encoding,
+        foveation_center_metadata: false,
         encoder_high_profile: capabilities.encoder_high_profile,
         encoder_10_bits: capabilities.encoder_10_bits,
         encoder_av1: capabilities.encoder_av1,
@@ -551,12 +552,12 @@ pub extern "C" fn alvr_report_compositor_start(
     out_view_params: *mut AlvrViewParams,
 ) {
     if let Some(context) = &*CLIENT_CORE_CONTEXT.lock() {
-        let view_params =
-            context.report_compositor_start(Duration::from_nanos(target_timestamp_ns));
+        let metadata = context.report_compositor_start(Duration::from_nanos(target_timestamp_ns));
+        let [left_view_params, right_view_params] = metadata.view_params;
 
         unsafe {
-            *out_view_params = alvr_common::to_capi_view_params(&view_params[0]);
-            *out_view_params.offset(1) = alvr_common::to_capi_view_params(&view_params[1]);
+            *out_view_params = alvr_common::to_capi_view_params(&left_view_params);
+            *out_view_params.offset(1) = alvr_common::to_capi_view_params(&right_view_params);
         }
     }
 }

@@ -503,6 +503,7 @@ pub unsafe extern "C" fn alvr_send_video_nal(
         context.send_video_nal(
             Duration::from_nanos(timestamp_ns),
             global_view_params,
+            None,
             is_idr,
             buffer.to_vec(),
         );

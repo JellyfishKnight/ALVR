@@ -75,6 +75,7 @@ pub struct ServerNegotiatedStreamingConfig {
     pub emulated_headset_view_resolution: UVec2,
     pub refresh_rate: f32,
     pub enable_foveated_encoding: bool,
+    pub enable_foveation_center_metadata: bool,
     pub codec: CodecType,
     pub h264_profile: H264Profile,
     pub use_10bit_encoder: bool,
@@ -385,6 +386,7 @@ impl ServerCoreContext {
         &self,
         timestamp: Duration,
         global_view_params: [ViewParams; 2],
+        foveation_centers: Option<[Vec2; 2]>,
         is_idr: bool,
         nal_buffer: Vec<u8>,
     ) {
@@ -444,6 +446,7 @@ impl ServerCoreContext {
                     header: VideoPacketHeader {
                         timestamp,
                         global_view_params,
+                        foveation_centers,
                         is_idr,
                     },
                     payload: nal_buffer,

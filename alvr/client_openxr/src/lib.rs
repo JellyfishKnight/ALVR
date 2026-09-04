@@ -330,6 +330,7 @@ pub fn entry_point() {
             max_view_resolution,
             refresh_rates,
             foveated_encoding: platform != Platform::Unknown,
+            foveation_center_metadata: true,
             encoder_high_profile: platform != Platform::Unknown,
             encoder_10_bits: platform != Platform::Unknown,
             encoder_av1: matches!(

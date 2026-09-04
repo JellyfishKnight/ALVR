@@ -98,6 +98,7 @@ struct Settings {
     char m_captureFrameDir[1024];
 
     bool m_enableFoveatedEncoding;
+    bool m_enableFoveationCenterMetadata;
     float m_foveationCenterSizeX;
     float m_foveationCenterSizeY;
     float m_foveationCenterShiftX;
@@ -208,6 +209,9 @@ extern "C" unsigned long long PathStringToHash(const char* path);
 extern "C" void ReportPresent(unsigned long long timestamp_ns, unsigned long long offset_ns);
 extern "C" void ReportComposed(unsigned long long timestamp_ns, unsigned long long offset_ns);
 extern "C" FfiDynamicEncoderParams GetDynamicEncoderParams();
+extern "C" void SetEncoderFoveationCenters(
+    unsigned long long targetTimestampNs, float leftX, float leftY, float rightX, float rightY
+);
 extern "C" unsigned long long GetSerialNumber(unsigned long long deviceID, char* outString);
 extern "C" void SetOpenvrProps(void* instancePtr, unsigned long long deviceID);
 extern "C" void RegisterButtons(void* instancePtr, unsigned long long deviceID);

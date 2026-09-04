@@ -176,7 +176,7 @@ void FFR::Initialize(ID3D11Texture2D* compositionTexture) {
     }
 }
 
-void FFR::Render() {
+void FFR::Render(uint64_t targetTimestampNs) {
     auto fovVars = CalculateFoveationVars(
         Settings_Instance()->m_foveationCenterShiftX,
         Settings_Instance()->m_foveationCenterShiftY,
@@ -184,6 +184,17 @@ void FFR::Render() {
         Settings_Instance()->m_foveationCenterShiftY
     );
     UpdateBuffer(mImmediateContext.Get(), mFoveatedRenderingBuffer.Get(), &fovVars);
+
+    if (Settings_Instance()->m_enableFoveationCenterMetadata) {
+        // Publish the exact encoder-aligned values used for this frame.
+        SetEncoderFoveationCenters(
+            targetTimestampNs,
+            fovVars.centerShiftLeftX,
+            fovVars.centerShiftLeftY,
+            fovVars.centerShiftRightX,
+            fovVars.centerShiftRightY
+        );
+    }
 
     for (auto& p : mPipelines) {
         p.Render();

@@ -23,9 +23,10 @@ pub const AUDIO: u16 = 2;
 pub const VIDEO: u16 = 3;
 pub const STATISTICS: u16 = 4;
 
-#[derive(Serialize, Deserialize, Clone)]
+#[derive(Serialize, Deserialize, Clone, Default)]
 pub struct VideoStreamingCapabilitiesExt {
-    // Nothing for now
+    #[serde(default)]
+    pub foveation_center_metadata: bool,
 }
 
 #[derive(Serialize, Deserialize, Clone)]
@@ -53,11 +54,7 @@ impl VideoStreamingCapabilities {
     }
 
     pub fn ext(&self) -> Result<VideoStreamingCapabilitiesExt> {
-        let _ext_json = json::from_str::<json::Value>(&self.ext_str)?;
-
-        // decode values here
-
-        Ok(VideoStreamingCapabilitiesExt {})
+        Ok(json::from_str(&self.ext_str)?)
     }
 }
 
@@ -239,6 +236,7 @@ pub struct TrackingData {
 pub struct VideoPacketHeader {
     pub timestamp: Duration,
     pub global_view_params: [ViewParams; 2],
+    pub foveation_centers: Option<[Vec2; 2]>,
     pub is_idr: bool,
 }
 
