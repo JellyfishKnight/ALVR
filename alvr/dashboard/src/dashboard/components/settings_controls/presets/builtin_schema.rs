@@ -196,38 +196,28 @@ shutterring and high encode/decode latency!"
         .collect(),
         flags: ["steamvr-restart".into()].into_iter().collect(),
         options: [
-            ("Light", 0.80, 0.80, 8.0, 8.0),
-            ("Medium", 0.66, 0.60, 6.0, 6.0),
-            ("High", 0.45, 0.40, 4.0, 5.0),
+            ("Light", [0.80, 0.80], [8.0, 8.0]),
+            ("Medium", [0.66, 0.60], [6.0, 6.0]),
+            ("High", [0.45, 0.40], [4.0, 5.0]),
         ]
         .into_iter()
-        .map(
-            |(key, val_size_x, val_size_y, val_edge_x, val_edge_y)| HigherOrderChoiceOption {
-                display_name: key.into(),
-                modifiers: [
-                    bool_modifier(&format!("{PREFIX}.enabled"), true),
-                    num_modifier(
-                        &format!("{PREFIX}.content.center_size_x"),
-                        &val_size_x.to_string(),
-                    ),
-                    num_modifier(
-                        &format!("{PREFIX}.content.center_size_y"),
-                        &val_size_y.to_string(),
-                    ),
-                    num_modifier(
-                        &format!("{PREFIX}.content.edge_ratio_x"),
-                        &val_edge_x.to_string(),
-                    ),
-                    num_modifier(
-                        &format!("{PREFIX}.content.edge_ratio_y"),
-                        &val_edge_y.to_string(),
-                    ),
-                ]
-                .into_iter()
-                .collect(),
-                content: None,
-            },
-        )
+        .map(|(key, center_size, edge_ratio)| HigherOrderChoiceOption {
+            display_name: key.into(),
+            modifiers: [
+                bool_modifier(&format!("{PREFIX}.enabled"), true),
+                PresetModifier {
+                    target_path: format!("{PREFIX}.content.center_size.content"),
+                    operation: PresetModifierOperation::Assign(serde_json::json!(center_size)),
+                },
+                PresetModifier {
+                    target_path: format!("{PREFIX}.content.edge_ratio.content"),
+                    operation: PresetModifierOperation::Assign(serde_json::json!(edge_ratio)),
+                },
+            ]
+            .into_iter()
+            .collect(),
+            content: None,
+        })
         .collect(),
         default_option_display_name: "High".into(),
         gui: ChoiceControlType::ButtonGroup,

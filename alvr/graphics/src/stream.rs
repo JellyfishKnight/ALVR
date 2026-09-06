@@ -37,9 +37,11 @@ const _: () = assert!(
     "Push constants size exceeds the maximum size"
 );
 
-enum FoveationCenterShifts {
-    Requested([Vec2; 2]),
-    Aligned([Vec2; 2]),
+enum FoveationCenterAlignment {
+    // Configured centers must be aligned to the encoder's pixel grid.
+    Unaligned,
+    // Runtime centers already used by the encoder must not be rounded again.
+    EncoderAligned,
 }
 
 pub struct StreamViewParams {
@@ -130,7 +132,8 @@ impl StreamRenderer {
                 foveated_encoding_data(
                     base_view_resolution,
                     config,
-                    FoveationCenterShifts::Requested(static_foveation_center_shifts(config)),
+                    [Vec2::from_array(config.center_shift); 2],
+                    FoveationCenterAlignment::Unaligned,
                 )
             } else {
                 (
@@ -293,6 +296,8 @@ impl StreamRenderer {
         }
     }
 
+    /// Runtime foveation centers must already be encoder-aligned. `None` uses the static config.
+    ///
     /// # Safety
     /// `hardware_buffer` must be a valid pointer to a ANativeWindowBuffer.
     pub fn render(
@@ -310,12 +315,16 @@ impl StreamRenderer {
         if let Some(config) = &self.foveated_encoding
             && self.last_foveation_center_shifts.get() != foveation_center_shifts
         {
-            let centers = if let Some(center_shifts) = foveation_center_shifts {
-                FoveationCenterShifts::Aligned(center_shifts)
+            let (center_shifts, alignment) = if let Some(center_shifts) = foveation_center_shifts {
+                (center_shifts, FoveationCenterAlignment::EncoderAligned)
             } else {
-                FoveationCenterShifts::Requested(static_foveation_center_shifts(config))
+                (
+                    [Vec2::from_array(config.center_shift); 2],
+                    FoveationCenterAlignment::Unaligned,
+                )
             };
-            let (_, uniforms) = foveated_encoding_data(self.base_view_resolution, config, centers);
+            let (_, uniforms) =
+                foveated_encoding_data(self.base_view_resolution, config, center_shifts, alignment);
             self.context.queue.write_buffer(
                 &self.foveation_buffer,
                 0,
@@ -403,11 +412,6 @@ impl StreamRenderer {
 
         self.context.queue.submit(iter::once(encoder.finish()));
     }
-}
-
-fn static_foveation_center_shifts(config: &FoveatedEncodingConfig) -> [Vec2; 2] {
-    // If no runtime override is provided, retain the legacy static transform.
-    [Vec2::new(config.center_shift_x, config.center_shift_y); 2]
 }
 
 fn set_passthrough_push_constants(render_pass: &mut RenderPass, config: Option<&PassthroughMode>) {
@@ -516,12 +520,13 @@ fn set_passthrough_push_constants(render_pass: &mut RenderPass, config: Option<&
 fn foveated_encoding_data(
     expanded_view_resolution: UVec2,
     config: &FoveatedEncodingConfig,
-    center_shifts: FoveationCenterShifts,
+    center_shifts: [Vec2; 2],
+    alignment: FoveationCenterAlignment,
 ) -> (UVec2, [Vec4; FOVEATION_UNIFORM_VEC4_COUNT]) {
     let view_resolution = expanded_view_resolution.as_vec2();
 
-    let center_size = glam::vec2(config.center_size_x, config.center_size_y);
-    let edge_ratio = glam::vec2(config.edge_ratio_x, config.edge_ratio_y);
+    let center_size = Vec2::from_array(config.center_size);
+    let edge_ratio = Vec2::from_array(config.edge_ratio);
 
     let edge_size = view_resolution - center_size * view_resolution;
     let center_size_aligned =
@@ -540,14 +545,14 @@ fn foveated_encoding_data(
     let c0 = (1. - center_size_aligned) * 0.5;
     let c2 = (edge_ratio - 1.) * center_size_aligned + 1.;
 
-    let center_shifts = match center_shifts {
-        FoveationCenterShifts::Requested(center_shifts) => center_shifts.map(|center_shift| {
+    let center_shifts = match alignment {
+        FoveationCenterAlignment::Unaligned => center_shifts.map(|center_shift| {
             glam::vec2(
                 align_center_shift(center_shift.x, edge_size_aligned.x, edge_ratio.x),
                 align_center_shift(center_shift.y, edge_size_aligned.y, edge_ratio.y),
             )
         }),
-        FoveationCenterShifts::Aligned(center_shifts) => center_shifts.map(|center_shift| {
+        FoveationCenterAlignment::EncoderAligned => center_shifts.map(|center_shift| {
             glam::vec2(
                 sanitize_aligned_center_shift(center_shift.x, edge_size_aligned.x, edge_ratio.x),
                 sanitize_aligned_center_shift(center_shift.y, edge_size_aligned.y, edge_ratio.y),

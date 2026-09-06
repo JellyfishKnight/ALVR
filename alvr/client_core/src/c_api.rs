@@ -684,12 +684,15 @@ pub extern "C" fn alvr_start_stream_opengl(config: AlvrStreamConfig) {
         convert_swapchain_array(config.swapchain_textures, config.swapchain_length);
     let foveated_encoding = config.enable_foveation.then_some(FoveatedEncodingConfig {
         force_enable: true,
-        center_size_x: config.foveation_center_size_x,
-        center_size_y: config.foveation_center_size_y,
-        center_shift_x: config.foveation_center_shift_x,
-        center_shift_y: config.foveation_center_shift_y,
-        edge_ratio_x: config.foveation_edge_ratio_x,
-        edge_ratio_y: config.foveation_edge_ratio_y,
+        center_size: [
+            config.foveation_center_size_x,
+            config.foveation_center_size_y,
+        ],
+        center_shift: [
+            config.foveation_center_shift_x,
+            config.foveation_center_shift_y,
+        ],
+        edge_ratio: [config.foveation_edge_ratio_x, config.foveation_edge_ratio_y],
     });
     let upscaling = config.enable_upscaling.then_some(UpscalingConfig {
         edge_direction: config.upscaling_edge_direction,

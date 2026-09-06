@@ -107,12 +107,12 @@ fn make_settings(negotiated: Option<&ServerNegotiatedStreamingConfig>) -> Settin
         fov_edge_ratio_y,
     ) = if let Switch::Enabled(config) = &video.foveated_encoding {
         (
-            config.center_size_x,
-            config.center_size_y,
-            config.center_shift_x,
-            config.center_shift_y,
-            config.edge_ratio_x,
-            config.edge_ratio_y,
+            config.center_size[0],
+            config.center_size[1],
+            config.center_shift[0],
+            config.center_shift[1],
+            config.edge_ratio[0],
+            config.edge_ratio[1],
         )
     } else {
         (0.0, 0.0, 0.0, 0.0, 0.0, 0.0)

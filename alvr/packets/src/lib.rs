@@ -127,8 +127,22 @@ impl StreamConfigPacket {
         session: &SessionConfig,
         negotiated: ClientNegotiatedStreamingConfig,
     ) -> Result<Self> {
+        let mut session = json::to_value(session)?;
+        // Keep the existing wire format: older clients cannot read the array fields.
+        if let Some(config) = session
+            .pointer_mut("/session_settings/video/foveated_encoding/content")
+            .and_then(json::Value::as_object_mut)
+        {
+            for name in ["center_size", "center_shift", "edge_ratio"] {
+                if let Some(array) = config.remove(name) {
+                    config.insert(format!("{name}_x"), array["content"][0].clone());
+                    config.insert(format!("{name}_y"), array["content"][1].clone());
+                }
+            }
+        }
+
         Ok(Self {
-            session: json::to_string(session)?,
+            session: json::to_string(&session)?,
             negotiated,
         })
     }
