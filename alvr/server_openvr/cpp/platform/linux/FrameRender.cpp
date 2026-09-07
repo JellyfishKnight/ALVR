@@ -125,9 +125,9 @@ void FrameRender::setupFoveatedRendering() {
 #undef ENTRY
 
     m_foveationCenterShifts = { params.centerShifts[0][0],
-                               params.centerShifts[0][1],
-                               params.centerShifts[1][0],
-                               params.centerShifts[1][1] };
+                                params.centerShifts[0][1],
+                                params.centerShifts[1][0],
+                                params.centerShifts[1][1] };
 
     RenderPipeline* pipeline = new RenderPipeline(this);
     pipeline->SetShader(FFR_SHADER_COMP_SPV_PTR, FFR_SHADER_COMP_SPV_LEN);
