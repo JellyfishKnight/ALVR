@@ -6,7 +6,7 @@ use crate::{
     logging_backend, tracking::HandType,
 };
 use alvr_common::{
-    AlvrCodecType, AlvrPose, AlvrViewParams, log,
+    AlvrCodecType, AlvrPose, AlvrViewParams, FoveatedEncodingParams, log,
     parking_lot::{Mutex, RwLock},
 };
 use alvr_packets::{ButtonEntry, ButtonValue, Haptics};
@@ -102,6 +102,7 @@ pub struct AlvrNegotiatedConfig {
     pub target_view_resolution: [u32; 2],
     pub refresh_rate: f32,
     pub enable_foveated_encoding: bool,
+    pub foveated_encoding: FoveatedEncodingParams,
     pub codec: AlvrCodecType,
     pub h264_profile: u32,
     pub use_10bit_encoder: bool,
@@ -423,7 +424,8 @@ pub unsafe extern "C" fn alvr_get_negotiated_config(out_config: *mut AlvrNegotia
                     config.emulated_headset_view_resolution.y,
                 ],
                 refresh_rate: config.refresh_rate,
-                enable_foveated_encoding: config.enable_foveated_encoding,
+                enable_foveated_encoding: config.foveated_encoding.is_some(),
+                foveated_encoding: config.foveated_encoding.unwrap_or_default(),
                 codec: match config.codec {
                     CodecType::H264 => AlvrCodecType::H264,
                     CodecType::Hevc => AlvrCodecType::Hevc,

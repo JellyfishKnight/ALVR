@@ -1,9 +1,9 @@
 use super::{GraphicsContext, MAX_PUSH_CONSTANTS_SIZE, staging::StagingRenderer};
 use alvr_common::{
-    ViewParams,
-    glam::{self, Mat4, UVec2, Vec2, Vec3, Vec4},
+    FoveatedEncodingParams, ViewParams,
+    glam::{Mat4, UVec2, Vec2, Vec3, Vec4},
 };
-use alvr_session::{FoveatedEncodingConfig, PassthroughMode, UpscalingConfig};
+use alvr_session::{PassthroughMode, UpscalingConfig};
 use std::{cell::Cell, ffi::c_void, iter, mem, rc::Rc};
 use wgpu::{
     BindGroup, BindGroupDescriptor, BindGroupEntry, BindGroupLayoutDescriptor,
@@ -37,13 +37,6 @@ const _: () = assert!(
     "Push constants size exceeds the maximum size"
 );
 
-enum FoveationCenterAlignment {
-    // Configured centers must be aligned to the encoder's pixel grid.
-    Unaligned,
-    // Runtime centers already used by the encoder must not be rounded again.
-    EncoderAligned,
-}
-
 pub struct StreamViewParams {
     pub swapchain_index: u32,
     pub input_view_params: ViewParams,
@@ -61,8 +54,7 @@ pub struct StreamRenderer {
     staging_renderer: StagingRenderer,
     pipeline: RenderPipeline,
     views_objects: [ViewObjects; 2],
-    base_view_resolution: UVec2,
-    foveated_encoding: Option<FoveatedEncodingConfig>,
+    foveated_encoding: Option<FoveatedEncodingParams>,
     foveation_buffer: Buffer,
     last_foveation_center_shifts: Cell<Option<[Vec2; 2]>>,
 }
@@ -76,7 +68,7 @@ impl StreamRenderer {
         target_view_resolution: UVec2,
         swapchain_textures: [Vec<u32>; 2],
         target_format: u32,
-        foveated_encoding: Option<FoveatedEncodingConfig>,
+        foveated_encoding: Option<FoveatedEncodingParams>,
         enable_srgb_correction: bool,
         fix_limited_range: bool,
         encoding_gamma: f32,
@@ -129,11 +121,9 @@ impl StreamRenderer {
 
         let (staging_resolution, initial_foveation_uniforms) =
             if let Some(config) = &foveated_encoding {
-                foveated_encoding_data(
-                    base_view_resolution,
-                    config,
-                    [Vec2::from_array(config.center_shift); 2],
-                    FoveationCenterAlignment::Unaligned,
+                (
+                    UVec2::from_array(config.encoded_view_resolution),
+                    foveated_encoding_data(config, config.center_shifts.map(Vec2::from_array)),
                 )
             } else {
                 (
@@ -289,14 +279,13 @@ impl StreamRenderer {
             staging_renderer,
             pipeline,
             views_objects: view_objects.try_into().unwrap(),
-            base_view_resolution,
             foveated_encoding,
             foveation_buffer,
             last_foveation_center_shifts: Cell::new(None),
         }
     }
 
-    /// Runtime foveation centers must already be encoder-aligned. `None` uses the static config.
+    /// Runtime foveation centers must already be encoder-aligned. `None` uses the negotiated centers.
     ///
     /// # Safety
     /// `hardware_buffer` must be a valid pointer to a ANativeWindowBuffer.
@@ -315,16 +304,9 @@ impl StreamRenderer {
         if let Some(config) = &self.foveated_encoding
             && self.last_foveation_center_shifts.get() != foveation_center_shifts
         {
-            let (center_shifts, alignment) = if let Some(center_shifts) = foveation_center_shifts {
-                (center_shifts, FoveationCenterAlignment::EncoderAligned)
-            } else {
-                (
-                    [Vec2::from_array(config.center_shift); 2],
-                    FoveationCenterAlignment::Unaligned,
-                )
-            };
-            let (_, uniforms) =
-                foveated_encoding_data(self.base_view_resolution, config, center_shifts, alignment);
+            let center_shifts = foveation_center_shifts
+                .unwrap_or_else(|| config.center_shifts.map(Vec2::from_array));
+            let uniforms = foveated_encoding_data(config, center_shifts);
             self.context.queue.write_buffer(
                 &self.foveation_buffer,
                 0,
@@ -518,47 +500,15 @@ fn set_passthrough_push_constants(render_pass: &mut RenderPass, config: Option<&
 }
 
 fn foveated_encoding_data(
-    expanded_view_resolution: UVec2,
-    config: &FoveatedEncodingConfig,
+    config: &FoveatedEncodingParams,
     center_shifts: [Vec2; 2],
-    alignment: FoveationCenterAlignment,
-) -> (UVec2, [Vec4; FOVEATION_UNIFORM_VEC4_COUNT]) {
-    let view_resolution = expanded_view_resolution.as_vec2();
-
-    let center_size = Vec2::from_array(config.center_size);
+) -> [Vec4; FOVEATION_UNIFORM_VEC4_COUNT] {
+    let center_size_aligned = Vec2::from_array(config.center_size);
     let edge_ratio = Vec2::from_array(config.edge_ratio);
-
-    let edge_size = view_resolution - center_size * view_resolution;
-    let center_size_aligned =
-        1. - (edge_size / (edge_ratio * 2.)).ceil() * (edge_ratio * 2.) / view_resolution;
-
-    let edge_size_aligned = view_resolution - center_size_aligned * view_resolution;
-    let foveation_scale = center_size_aligned + (1. - center_size_aligned) / edge_ratio;
-
-    let optimized_view_resolution = foveation_scale * view_resolution;
-
-    let optimized_view_resolution_aligned =
-        optimized_view_resolution.map(|v| (v / 32.).ceil() * 32.);
-
-    let view_ratio_aligned = optimized_view_resolution / optimized_view_resolution_aligned;
+    let view_ratio_aligned = Vec2::from_array(config.view_ratio);
 
     let c0 = (1. - center_size_aligned) * 0.5;
     let c2 = (edge_ratio - 1.) * center_size_aligned + 1.;
-
-    let center_shifts = match alignment {
-        FoveationCenterAlignment::Unaligned => center_shifts.map(|center_shift| {
-            glam::vec2(
-                align_center_shift(center_shift.x, edge_size_aligned.x, edge_ratio.x),
-                align_center_shift(center_shift.y, edge_size_aligned.y, edge_ratio.y),
-            )
-        }),
-        FoveationCenterAlignment::EncoderAligned => center_shifts.map(|center_shift| {
-            glam::vec2(
-                sanitize_aligned_center_shift(center_shift.x, edge_size_aligned.x, edge_ratio.x),
-                sanitize_aligned_center_shift(center_shift.y, edge_size_aligned.y, edge_ratio.y),
-            )
-        }),
-    };
 
     let mut uniforms = [Vec4::ZERO; FOVEATION_UNIFORM_VEC4_COUNT];
     let [common_uniform, eye_uniforms @ ..] = &mut uniforms;
@@ -600,58 +550,7 @@ fn foveated_encoding_data(
         *right_curve = Vec4::new(c_right.x, c_right.y, 0.0, 0.0);
     }
 
-    (optimized_view_resolution_aligned.as_uvec2(), uniforms)
-}
-
-fn align_center_shift(center_shift: f32, edge_size_aligned: f32, edge_ratio: f32) -> f32 {
-    let Some(alignment_step) =
-        center_shift_alignment_step(center_shift, edge_size_aligned, edge_ratio)
-    else {
-        return 0.0;
-    };
-
-    // The inverse coefficients are singular at exactly +/-1. Match the server
-    // by reserving one encoder-alignment step for both peripheral segments.
-    // Keep the legacy operation order. Although this is algebraically equivalent to dividing by
-    // alignment_step, the latter can round across an integer boundary with f32 inputs.
-    let aligned = (center_shift * edge_size_aligned / (edge_ratio * 2.0)).ceil()
-        * (edge_ratio * 2.0)
-        / edge_size_aligned;
-
-    aligned.clamp(-1.0 + alignment_step, 1.0 - alignment_step)
-}
-
-fn sanitize_aligned_center_shift(
-    center_shift: f32,
-    edge_size_aligned: f32,
-    edge_ratio: f32,
-) -> f32 {
-    let Some(alignment_step) =
-        center_shift_alignment_step(center_shift, edge_size_aligned, edge_ratio)
-    else {
-        return 0.0;
-    };
-
-    center_shift.clamp(-1.0 + alignment_step, 1.0 - alignment_step)
-}
-
-fn center_shift_alignment_step(
-    center_shift: f32,
-    edge_size_aligned: f32,
-    edge_ratio: f32,
-) -> Option<f32> {
-    if !center_shift.is_finite()
-        || !edge_size_aligned.is_finite()
-        || !edge_ratio.is_finite()
-        || edge_size_aligned <= 0.0
-        || edge_ratio <= 0.0
-    {
-        return None;
-    }
-
-    let alignment_step = edge_ratio * 2.0 / edge_size_aligned;
-
-    (alignment_step.is_finite() && alignment_step < 1.0).then_some(alignment_step)
+    uniforms
 }
 
 fn foveation_uniform_bytes(

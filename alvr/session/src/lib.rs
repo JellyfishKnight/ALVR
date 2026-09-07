@@ -82,29 +82,6 @@ impl SessionConfig {
     pub fn merge_from_json(&mut self, json_value: &json::Value) -> Result<()> {
         const SESSION_SETTINGS_STR: &str = "session_settings";
 
-        let mut json_value = json_value.clone();
-        // Older session files and stream configurations store each axis separately.
-        if let Some(config) = json_value
-            .pointer_mut("/session_settings/video/foveated_encoding/content")
-            .and_then(json::Value::as_object_mut)
-        {
-            for name in ["center_size", "center_shift", "edge_ratio"] {
-                let x = format!("{name}_x");
-                let y = format!("{name}_y");
-                if !config.contains_key(name)
-                    && (config.contains_key(&x) || config.contains_key(&y))
-                {
-                    config.insert(
-                        name.into(),
-                        json::json!({
-                            "gui_collapsed": false,
-                            "content": [config.get(&x), config.get(&y)],
-                        }),
-                    );
-                }
-            }
-        }
-
         if let Ok(session_desc) = json::from_value(json_value.clone()) {
             *self = session_desc;
             return Ok(());

@@ -16,8 +16,8 @@ pub use tracking::HandType;
 
 use crate::connection::VideoPacket;
 use alvr_common::{
-    ConnectionState, DEVICE_ID_TO_PATH, DeviceMotion, LifecycleState, Pose, ViewParams,
-    dbg_server_core, error,
+    ConnectionState, DEVICE_ID_TO_PATH, DeviceMotion, FoveatedEncodingParams, LifecycleState, Pose,
+    ViewParams, dbg_server_core, error,
     glam::{UVec2, Vec2},
     parking_lot::{Mutex, RwLock},
     settings_schema::Switch,
@@ -74,7 +74,7 @@ pub struct ServerNegotiatedStreamingConfig {
     pub transcoding_view_resolution: UVec2,
     pub emulated_headset_view_resolution: UVec2,
     pub refresh_rate: f32,
-    pub enable_foveated_encoding: bool,
+    pub foveated_encoding: Option<FoveatedEncodingParams>,
     pub codec: CodecType,
     pub h264_profile: H264Profile,
     pub use_10bit_encoder: bool,

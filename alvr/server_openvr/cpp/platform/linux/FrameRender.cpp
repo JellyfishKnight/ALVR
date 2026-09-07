@@ -7,27 +7,6 @@
 #include <filesystem>
 #include <fstream>
 
-namespace {
-float AlignCenterShift(float centerShift, float edgeSizeAligned, float edgeRatio) {
-    if (!std::isfinite(centerShift) || !std::isfinite(edgeSizeAligned) || !std::isfinite(edgeRatio)
-        || edgeSizeAligned <= 0.0f || edgeRatio <= 0.0f) {
-        return 0.0f;
-    }
-
-    const float alignmentStep = edgeRatio * 2.0f / edgeSizeAligned;
-    if (!std::isfinite(alignmentStep) || alignmentStep >= 1.0f) {
-        return 0.0f;
-    }
-
-    // Preserve the legacy operation order to avoid crossing an integer boundary after float
-    // rounding.
-    const float aligned = std::ceil(centerShift * edgeSizeAligned / (edgeRatio * 2.0f))
-        * (edgeRatio * 2.0f) / edgeSizeAligned;
-
-    return std::clamp(aligned, -1.0f + alignmentStep, 1.0f - alignmentStep);
-}
-} // namespace
-
 FrameRender::FrameRender(alvr::VkContext& ctx, init_packet& init, int fds[])
     : Renderer(
           ctx.get_vk_instance(),
@@ -125,45 +104,9 @@ void FrameRender::setupColorCorrection() {
 }
 
 void FrameRender::setupFoveatedRendering() {
-    float targetEyeWidth = (float)m_width / 2;
-    float targetEyeHeight = (float)m_height;
-
-    float centerSizeX = (float)Settings_Instance()->m_foveationCenterSizeX;
-    float centerSizeY = (float)Settings_Instance()->m_foveationCenterSizeY;
-    float centerShiftX = (float)Settings_Instance()->m_foveationCenterShiftX;
-    float centerShiftY = (float)Settings_Instance()->m_foveationCenterShiftY;
-    float edgeRatioX = (float)Settings_Instance()->m_foveationEdgeRatioX;
-    float edgeRatioY = (float)Settings_Instance()->m_foveationEdgeRatioY;
-
-    float edgeSizeX = targetEyeWidth - centerSizeX * targetEyeWidth;
-    float edgeSizeY = targetEyeHeight - centerSizeY * targetEyeHeight;
-
-    float centerSizeXAligned
-        = 1. - ceil(edgeSizeX / (edgeRatioX * 2.)) * (edgeRatioX * 2.) / targetEyeWidth;
-    float centerSizeYAligned
-        = 1. - ceil(edgeSizeY / (edgeRatioY * 2.)) * (edgeRatioY * 2.) / targetEyeHeight;
-
-    float edgeSizeXAligned = targetEyeWidth - centerSizeXAligned * targetEyeWidth;
-    float edgeSizeYAligned = targetEyeHeight - centerSizeYAligned * targetEyeHeight;
-
-    float centerShiftXAligned = AlignCenterShift(centerShiftX, edgeSizeXAligned, edgeRatioX);
-    float centerShiftYAligned = AlignCenterShift(centerShiftY, edgeSizeYAligned, edgeRatioY);
-
-    float foveationScaleX = (centerSizeXAligned + (1. - centerSizeXAligned) / edgeRatioX);
-    float foveationScaleY = (centerSizeYAligned + (1. - centerSizeYAligned) / edgeRatioY);
-
-    float optimizedEyeWidth = foveationScaleX * targetEyeWidth;
-    float optimizedEyeHeight = foveationScaleY * targetEyeHeight;
-
-    // round the frame dimensions to a number of pixel multiple of 32 for the encoder
-    auto optimizedEyeWidthAligned = (uint32_t)ceil(optimizedEyeWidth / 32.f) * 32;
-    auto optimizedEyeHeightAligned = (uint32_t)ceil(optimizedEyeHeight / 32.f) * 32;
-
-    float eyeWidthRatioAligned = optimizedEyeWidth / optimizedEyeWidthAligned;
-    float eyeHeightRatioAligned = optimizedEyeHeight / optimizedEyeHeightAligned;
-
-    m_width = optimizedEyeWidthAligned * 2;
-    m_height = optimizedEyeHeightAligned;
+    const auto& params = Settings_Instance()->m_foveatedEncoding;
+    m_width = params.encodedViewResolution[0] * 2;
+    m_height = params.encodedViewResolution[1];
 
     std::vector<VkSpecializationMapEntry> entries;
 
@@ -173,16 +116,18 @@ void FrameRender::setupFoveatedRendering() {
         { (uint32_t)entries.size(), offsetof(FoveationVars, x), sizeof(FoveationVars::x) }         \
     );
 
-    ENTRY(eyeWidthRatio, eyeWidthRatioAligned);
-    ENTRY(eyeHeightRatio, eyeHeightRatioAligned);
-    ENTRY(centerSizeX, centerSizeXAligned);
-    ENTRY(centerSizeY, centerSizeYAligned);
-    ENTRY(edgeRatioX, edgeRatioX);
-    ENTRY(edgeRatioY, edgeRatioY);
+    ENTRY(eyeWidthRatio, params.viewRatio[0]);
+    ENTRY(eyeHeightRatio, params.viewRatio[1]);
+    ENTRY(centerSizeX, params.centerSize[0]);
+    ENTRY(centerSizeY, params.centerSize[1]);
+    ENTRY(edgeRatioX, params.edgeRatio[0]);
+    ENTRY(edgeRatioY, params.edgeRatio[1]);
 #undef ENTRY
 
-    m_foveationCenterShifts
-        = { centerShiftXAligned, centerShiftYAligned, centerShiftXAligned, centerShiftYAligned };
+    m_foveationCenterShifts = { params.centerShifts[0][0],
+                               params.centerShifts[0][1],
+                               params.centerShifts[1][0],
+                               params.centerShifts[1][1] };
 
     RenderPipeline* pipeline = new RenderPipeline(this);
     pipeline->SetShader(FFR_SHADER_COMP_SPV_PTR, FFR_SHADER_COMP_SPV_LEN);

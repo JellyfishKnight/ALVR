@@ -1,5 +1,6 @@
 use alvr_common::{
-    BodySkeleton, ConnectionState, DeviceMotion, LogSeverity, Pose, ViewParams,
+    BodySkeleton, ConnectionState, DeviceMotion, FoveatedEncodingParams, LogSeverity, Pose,
+    ViewParams,
     anyhow::Result,
     glam::{Quat, UVec2, Vec2},
     semver::Version,
@@ -85,7 +86,7 @@ pub struct ClientNegotiatedStreamingConfig {
     pub view_resolution: UVec2,
     pub refresh_rate_hint: f32,
     pub game_audio_sample_rate: u32,
-    pub enable_foveated_encoding: bool,
+    pub foveated_encoding: Option<FoveatedEncodingParams>,
     pub encoding_gamma: f32,
     pub enable_hdr: bool,
     pub wired: bool,
@@ -127,22 +128,8 @@ impl StreamConfigPacket {
         session: &SessionConfig,
         negotiated: ClientNegotiatedStreamingConfig,
     ) -> Result<Self> {
-        let mut session = json::to_value(session)?;
-        // Keep the existing wire format: older clients cannot read the array fields.
-        if let Some(config) = session
-            .pointer_mut("/session_settings/video/foveated_encoding/content")
-            .and_then(json::Value::as_object_mut)
-        {
-            for name in ["center_size", "center_shift", "edge_ratio"] {
-                if let Some(array) = config.remove(name) {
-                    config.insert(format!("{name}_x"), array["content"][0].clone());
-                    config.insert(format!("{name}_y"), array["content"][1].clone());
-                }
-            }
-        }
-
         Ok(Self {
-            session: json::to_string(&session)?,
+            session: json::to_string(session)?,
             negotiated,
         })
     }

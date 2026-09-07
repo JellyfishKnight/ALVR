@@ -5,7 +5,8 @@ use crate::{
     video_decoder::{self, VideoDecoderConfig, VideoDecoderSource},
 };
 use alvr_common::{
-    AlvrCodecType, AlvrFov, AlvrPose, AlvrQuat, AlvrViewParams, DeviceMotion, Pose, ViewParams,
+    AlvrCodecType, AlvrFov, AlvrPose, AlvrQuat, AlvrViewParams, DeviceMotion,
+    FoveatedEncodingParams, Pose, ViewParams,
     anyhow::Result,
     debug, error,
     glam::{UVec2, Vec2, Vec3},
@@ -18,9 +19,7 @@ use alvr_graphics::{
     StreamViewParams,
 };
 use alvr_packets::{ButtonEntry, ButtonValue, FaceData, TrackingData};
-use alvr_session::{
-    CodecType, FoveatedEncodingConfig, MediacodecPropType, MediacodecProperty, UpscalingConfig,
-};
+use alvr_session::{CodecType, MediacodecPropType, MediacodecProperty, UpscalingConfig};
 use std::{
     cell::RefCell,
     ffi::{CStr, CString, c_char, c_void},
@@ -64,6 +63,7 @@ pub enum AlvrEvent {
         refresh_rate_hint: f32,
         encoding_gamma: f32,
         enable_foveated_encoding: bool,
+        foveated_encoding: FoveatedEncodingParams,
         enable_hdr: bool,
     },
     StreamingStopped,
@@ -275,7 +275,12 @@ pub extern "C" fn alvr_poll_event(out_event: *mut AlvrEvent) -> bool {
                     encoding_gamma: stream_config.negotiated_config.encoding_gamma,
                     enable_foveated_encoding: stream_config
                         .negotiated_config
-                        .enable_foveated_encoding,
+                        .foveated_encoding
+                        .is_some(),
+                    foveated_encoding: stream_config
+                        .negotiated_config
+                        .foveated_encoding
+                        .unwrap_or_default(),
                     enable_hdr: stream_config.negotiated_config.enable_hdr,
                 }
             }
@@ -599,12 +604,8 @@ pub struct AlvrStreamConfig {
     swapchain_textures: *mut *const u32,
     swapchain_length: u32,
     enable_foveation: bool,
-    foveation_center_size_x: f32,
-    foveation_center_size_y: f32,
-    foveation_center_shift_x: f32,
-    foveation_center_shift_y: f32,
-    foveation_edge_ratio_x: f32,
-    foveation_edge_ratio_y: f32,
+    /// Copy the server-aligned parameters from the StreamingStarted event.
+    foveated_encoding: FoveatedEncodingParams,
     enable_upscaling: bool,
     upscaling_edge_direction: bool,
     upscaling_edge_threshold: f32,
@@ -682,18 +683,7 @@ pub extern "C" fn alvr_start_stream_opengl(config: AlvrStreamConfig) {
     let view_resolution = UVec2::new(config.view_resolution_width, config.view_resolution_height);
     let swapchain_textures =
         convert_swapchain_array(config.swapchain_textures, config.swapchain_length);
-    let foveated_encoding = config.enable_foveation.then_some(FoveatedEncodingConfig {
-        force_enable: true,
-        center_size: [
-            config.foveation_center_size_x,
-            config.foveation_center_size_y,
-        ],
-        center_shift: [
-            config.foveation_center_shift_x,
-            config.foveation_center_shift_y,
-        ],
-        edge_ratio: [config.foveation_edge_ratio_x, config.foveation_edge_ratio_y],
-    });
+    let foveated_encoding = config.enable_foveation.then_some(config.foveated_encoding);
     let upscaling = config.enable_upscaling.then_some(UpscalingConfig {
         edge_direction: config.upscaling_edge_direction,
         edge_sharpness: config.upscaling_edge_sharpness,

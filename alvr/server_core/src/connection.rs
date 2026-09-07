@@ -10,7 +10,8 @@ use crate::{
 use alvr_adb::{WiredConnection, WiredConnectionStatus};
 use alvr_common::{
     AnyhowToCon, BUTTON_INFO, CONTROLLER_PROFILE_INFO, ConResult, ConnectionError, ConnectionState,
-    LifecycleState, QUEST_CONTROLLER_PROFILE_PATH, con_bail, dbg_connection, debug, error,
+    FoveatedEncodingParams, LifecycleState, QUEST_CONTROLLER_PROFILE_PATH, con_bail,
+    dbg_connection, debug, error,
     glam::{UVec2, Vec2},
     info,
     parking_lot::{Condvar, Mutex, RwLock},
@@ -662,18 +663,88 @@ fn connection_pipeline(
         warn!("Chosen refresh rate not supported. Using {fps}Hz");
     }
 
-    let enable_foveated_encoding =
-        if let Switch::Enabled(config) = &initial_settings.video.foveated_encoding {
-            let enable = streaming_caps.foveated_encoding || config.force_enable;
+    let foveated_encoding = if let Switch::Enabled(config) =
+        &initial_settings.video.foveated_encoding
+    {
+        if streaming_caps.foveated_encoding || config.force_enable {
+            let mut params = FoveatedEncodingParams {
+                edge_ratio: config.edge_ratio,
+                ..Default::default()
+            };
 
-            if !enable {
-                warn!("Foveated encoding is not supported by the client.");
+            for (axis, resolution) in transcoding_view_resolution
+                .to_array()
+                .into_iter()
+                .enumerate()
+            {
+                let resolution = resolution as f32;
+                // # Safety: `axis` comes from a two-element resolution array, and each
+                // configuration array also contains exactly two axes.
+                let (center_size, center_shift, edge_ratio) = (
+                    config.center_size[axis],
+                    config.center_shift[axis],
+                    config.edge_ratio[axis],
+                );
+                let edge_size = resolution - center_size * resolution;
+
+                // Preserve the existing C++ encoder's operation order and double intermediates.
+                let center_size = (1.0
+                    - (edge_size as f64 / (edge_ratio as f64 * 2.0)).ceil()
+                        * (edge_ratio as f64 * 2.0)
+                        / resolution as f64) as f32;
+                let edge_size = resolution - center_size * resolution;
+                let center_shift = if !center_shift.is_finite()
+                    || !edge_size.is_finite()
+                    || !edge_ratio.is_finite()
+                    || edge_size <= 0.0
+                    || edge_ratio <= 0.0
+                {
+                    0.0
+                } else {
+                    let step = edge_ratio * 2.0 / edge_size;
+                    if !step.is_finite() || step >= 1.0 {
+                        0.0
+                    } else {
+                        // Reserve one alignment step on each edge to avoid singular inverse coefficients.
+                        // Do not replace this with division by `step`: f32 rounding can change the ceiling.
+                        let aligned = (center_shift * edge_size / (edge_ratio * 2.0)).ceil()
+                            * (edge_ratio * 2.0)
+                            / edge_size;
+
+                        aligned.clamp(-1.0 + step, 1.0 - step)
+                    }
+                };
+
+                let scale =
+                    (center_size as f64 + (1.0 - center_size as f64) / edge_ratio as f64) as f32;
+                let optimized_resolution = scale * resolution;
+                let encoded_resolution = (optimized_resolution / 32.0).ceil() as u32 * 32;
+
+                // # Safety: `axis` is 0 or 1; all output axis arrays and the eye array have length 2.
+                (
+                    params.encoded_view_resolution[axis],
+                    params.view_ratio[axis],
+                    params.center_size[axis],
+                    params.center_shifts[0][axis],
+                    params.center_shifts[1][axis],
+                ) = (
+                    encoded_resolution,
+                    optimized_resolution / encoded_resolution as f32,
+                    center_size,
+                    center_shift,
+                    center_shift,
+                );
             }
 
-            enable
+            Some(params)
         } else {
-            false
-        };
+            warn!("Foveated encoding is not supported by the client.");
+
+            None
+        }
+    } else {
+        None
+    };
 
     let encoder_profile = if initial_settings.video.encoder_config.h264_profile == H264Profile::High
     {
@@ -773,7 +844,7 @@ fn connection_pipeline(
             view_resolution: transcoding_view_resolution,
             refresh_rate_hint: fps,
             game_audio_sample_rate,
-            enable_foveated_encoding,
+            foveated_encoding,
             encoding_gamma,
             enable_hdr,
             wired,
@@ -1373,7 +1444,7 @@ fn connection_pipeline(
                 transcoding_view_resolution,
                 emulated_headset_view_resolution: transcoding_view_resolution,
                 refresh_rate: fps as _,
-                enable_foveated_encoding,
+                foveated_encoding,
                 codec,
                 h264_profile: encoder_profile,
                 use_10bit_encoder: enable_10_bits_encoding,
