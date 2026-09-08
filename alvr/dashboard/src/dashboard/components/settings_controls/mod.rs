@@ -66,8 +66,6 @@ pub fn json_values_eq(a: &serde_json::Value, b: &serde_json::Value) -> bool {
         && let Some(f2) = n2.as_f64()
     {
         f64_eq(f1, f2)
-    } else if let (serde_json::Value::Array(a), serde_json::Value::Array(b)) = (a, b) {
-        a.len() == b.len() && a.iter().zip(b).all(|(a, b)| json_values_eq(a, b))
     } else {
         a == b
     }

@@ -5,8 +5,7 @@ use crate::{
     video_decoder::{self, VideoDecoderConfig, VideoDecoderSource},
 };
 use alvr_common::{
-    AlvrCodecType, AlvrFov, AlvrPose, AlvrQuat, AlvrViewParams, DeviceMotion,
-    FoveatedEncodingParams, Pose, ViewParams,
+    AlvrCodecType, AlvrFov, AlvrPose, AlvrQuat, AlvrViewParams, DeviceMotion, Pose, ViewParams,
     anyhow::Result,
     debug, error,
     glam::{UVec2, Vec2, Vec3},
@@ -18,7 +17,7 @@ use alvr_graphics::{
     GraphicsContext, HandData, LobbyRenderer, LobbyViewParams, SDR_FORMAT_GL, StreamRenderer,
     StreamViewParams,
 };
-use alvr_packets::{ButtonEntry, ButtonValue, FaceData, TrackingData};
+use alvr_packets::{ButtonEntry, ButtonValue, FaceData, FoveatedEncodingParams, TrackingData};
 use alvr_session::{CodecType, MediacodecPropType, MediacodecProperty, UpscalingConfig};
 use std::{
     cell::RefCell,

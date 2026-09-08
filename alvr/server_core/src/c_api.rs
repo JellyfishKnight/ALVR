@@ -6,10 +6,10 @@ use crate::{
     logging_backend, tracking::HandType,
 };
 use alvr_common::{
-    AlvrCodecType, AlvrPose, AlvrViewParams, FoveatedEncodingParams, log,
+    AlvrCodecType, AlvrPose, AlvrViewParams, log,
     parking_lot::{Mutex, RwLock},
 };
-use alvr_packets::{ButtonEntry, ButtonValue, Haptics};
+use alvr_packets::{ButtonEntry, ButtonValue, FoveatedEncodingParams, Haptics};
 use alvr_session::CodecType;
 use std::{
     collections::{HashMap, VecDeque},

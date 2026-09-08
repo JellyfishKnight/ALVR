@@ -1,8 +1,9 @@
 use super::{GraphicsContext, MAX_PUSH_CONSTANTS_SIZE, staging::StagingRenderer};
 use alvr_common::{
-    FoveatedEncodingParams, ViewParams,
+    ViewParams,
     glam::{Mat4, UVec2, Vec2, Vec3, Vec4},
 };
+use alvr_packets::FoveatedEncodingParams;
 use alvr_session::{PassthroughMode, UpscalingConfig};
 use std::{cell::Cell, ffi::c_void, iter, mem, rc::Rc};
 use wgpu::{

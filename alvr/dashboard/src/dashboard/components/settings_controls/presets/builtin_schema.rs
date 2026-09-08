@@ -201,22 +201,35 @@ shutterring and high encode/decode latency!"
             ("High", [0.45, 0.40], [4.0, 5.0]),
         ]
         .into_iter()
-        .map(|(key, center_size, edge_ratio)| HigherOrderChoiceOption {
-            display_name: key.into(),
-            modifiers: [
-                bool_modifier(&format!("{PREFIX}.enabled"), true),
-                PresetModifier {
-                    target_path: format!("{PREFIX}.content.center_size.content"),
-                    operation: PresetModifierOperation::Assign(serde_json::json!(center_size)),
-                },
-                PresetModifier {
-                    target_path: format!("{PREFIX}.content.edge_ratio.content"),
-                    operation: PresetModifierOperation::Assign(serde_json::json!(edge_ratio)),
-                },
-            ]
-            .into_iter()
-            .collect(),
-            content: None,
+        .map(|(key, center_size, edge_ratio)| {
+            let [center_size_x, center_size_y] = center_size;
+            let [edge_ratio_x, edge_ratio_y] = edge_ratio;
+
+            HigherOrderChoiceOption {
+                display_name: key.into(),
+                modifiers: [
+                    bool_modifier(&format!("{PREFIX}.enabled"), true),
+                    num_modifier(
+                        &format!("{PREFIX}.content.center_size.content[0]"),
+                        &center_size_x.to_string(),
+                    ),
+                    num_modifier(
+                        &format!("{PREFIX}.content.center_size.content[1]"),
+                        &center_size_y.to_string(),
+                    ),
+                    num_modifier(
+                        &format!("{PREFIX}.content.edge_ratio.content[0]"),
+                        &edge_ratio_x.to_string(),
+                    ),
+                    num_modifier(
+                        &format!("{PREFIX}.content.edge_ratio.content[1]"),
+                        &edge_ratio_y.to_string(),
+                    ),
+                ]
+                .into_iter()
+                .collect(),
+                content: None,
+            }
         })
         .collect(),
         default_option_display_name: "High".into(),

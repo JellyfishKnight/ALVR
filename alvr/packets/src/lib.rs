@@ -1,6 +1,5 @@
 use alvr_common::{
-    BodySkeleton, ConnectionState, DeviceMotion, FoveatedEncodingParams, LogSeverity, Pose,
-    ViewParams,
+    BodySkeleton, ConnectionState, DeviceMotion, LogSeverity, Pose, ViewParams,
     anyhow::{Error, Result},
     glam::{Quat, UVec2, Vec2},
     semver::Version,
@@ -81,6 +80,18 @@ pub enum ClientConnectionResult {
 #[derive(Serialize, Deserialize)]
 pub struct NegotiatedStreamingConfigExt {
     // Nothing for now
+}
+
+/// Server-aligned FFR parameters shared by the encoder and client inverse transform.
+#[repr(C)]
+#[derive(Serialize, Deserialize, Clone, Copy, Debug, Default, PartialEq)]
+pub struct FoveatedEncodingParams {
+    pub encoded_view_resolution: [u32; 2],
+    pub view_ratio: [f32; 2],
+    pub center_size: [f32; 2],
+    /// Left/right eye offsets, each in X/Y order. Consumers must not align these again.
+    pub center_shifts: [[f32; 2]; 2],
+    pub edge_ratio: [f32; 2],
 }
 
 #[derive(Serialize, Deserialize, Clone)]

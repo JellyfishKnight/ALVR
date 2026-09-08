@@ -339,6 +339,7 @@ name = "alvr_graphics"
 version = "21.0.0-dev13"
 dependencies = [
  "alvr_common",
+ "alvr_packets",
  "alvr_session",
  "glow 0.16.0",
  "glyph_brush_layout",
