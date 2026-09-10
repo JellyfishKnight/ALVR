@@ -253,6 +253,8 @@ pub struct TrackingData {
 pub struct VideoPacketHeader {
     pub timestamp: Duration,
     pub global_view_params: [ViewParams; 2],
+    /// Centers used to encode this frame, already aligned. Normally absent when FFR is disabled.
+    pub foveation_center_shifts: Option<[[f32; 2]; 2]>,
     pub is_idr: bool,
 }
 

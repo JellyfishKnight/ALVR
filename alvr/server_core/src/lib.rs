@@ -385,6 +385,7 @@ impl ServerCoreContext {
         &self,
         timestamp: Duration,
         global_view_params: [ViewParams; 2],
+        foveation_center_shifts: Option<[[f32; 2]; 2]>,
         is_idr: bool,
         nal_buffer: Vec<u8>,
     ) {
@@ -444,6 +445,7 @@ impl ServerCoreContext {
                     header: VideoPacketHeader {
                         timestamp,
                         global_view_params,
+                        foveation_center_shifts,
                         is_idr,
                     },
                     payload: nal_buffer,

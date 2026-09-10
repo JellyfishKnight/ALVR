@@ -6,7 +6,7 @@ use crate::{
     logging_backend, tracking::HandType,
 };
 use alvr_common::{
-    AlvrCodecType, AlvrPose, AlvrViewParams, log,
+    AlvrCodecType, AlvrFoveationCenters, AlvrPose, AlvrViewParams, log,
     parking_lot::{Mutex, RwLock},
 };
 use alvr_packets::{ButtonEntry, ButtonValue, FoveatedEncodingParams, Haptics};
@@ -484,10 +484,14 @@ pub unsafe extern "C" fn alvr_set_video_config_nals(
 }
 
 /// global_view_params must be an array of length 2
+/// `foveation_centers` must contain the centers used to encode this frame, already aligned.
+/// Frames with the same timestamp_ns must use the same centers.
+/// Set has_centers to false only when FFR is disabled.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn alvr_send_video_nal(
     timestamp_ns: u64,
     global_view_params: *const AlvrViewParams,
+    foveation_centers: AlvrFoveationCenters,
     is_idr: bool,
     buffer_ptr: *mut u8,
     len: i32,
@@ -505,6 +509,9 @@ pub unsafe extern "C" fn alvr_send_video_nal(
         context.send_video_nal(
             Duration::from_nanos(timestamp_ns),
             global_view_params,
+            foveation_centers
+                .has_centers
+                .then_some(foveation_centers.center_shifts),
             is_idr,
             buffer.to_vec(),
         );

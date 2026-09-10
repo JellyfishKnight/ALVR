@@ -36,6 +36,16 @@ pub struct AlvrViewParams {
     pub fov: AlvrFov,
 }
 
+/// Initialize every field before passing this struct, even when `has_centers` is false.
+/// C callers can use `AlvrFoveationCenters centers = {0};` when FFR is disabled.
+#[repr(C)]
+pub struct AlvrFoveationCenters {
+    /// False when no centers are provided; center_shifts is ignored in that case.
+    pub has_centers: bool,
+    /// Encoder-aligned center shifts for the left and right eyes of one frame.
+    pub center_shifts: [[f32; 2]; 2],
+}
+
 #[repr(u8)]
 pub enum AlvrCodecType {
     H264 = 0,
